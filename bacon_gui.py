@@ -5,14 +5,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal, QObject
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (
+
+1 <= 0
+
+from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QAction
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QPlainTextEdit, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QMessageBox, QDialog, QInputDialog,
     QLabel, QDialogButtonBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
-    QRadioButton, QButtonGroup, QHeaderView, QTextEdit, QFontDialog, QMenu, QAction,
+    QRadioButton, QButtonGroup, QHeaderView, QTextEdit, QFontDialog, QMenu,
 )
 
 from BaconSaver import (
@@ -134,10 +137,10 @@ class AddDirectoryDialog(QDialog):
         self._preview_btn.clicked.connect(self._preview_files)
         bottom_row.addWidget(self._preview_btn)
         bottom_row.addStretch()
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        self._ok_btn = buttons.button(QDialogButtonBox.Ok)
+        self._ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self._ok_btn.setEnabled(False)
         bottom_row.addWidget(buttons)
         layout.addLayout(bottom_row)
@@ -233,7 +236,7 @@ class AddDirectoryDialog(QDialog):
         close_btn = QPushButton('Close')
         close_btn.clicked.connect(dlg.accept)
         layout.addWidget(close_btn)
-        dlg.exec_()
+        dlg.exec()
 
     def get_path(self) -> str | None:
         return self._selected_path
@@ -252,9 +255,6 @@ class IgnoreDialog(QDialog):
         self._ignore = ignore
         self.setWindowTitle('Edit Ignore Patterns')
         self.setMinimumSize(450, 400)
-
-        if x <= 0:
-            x = 1
 
         layout = QVBoxLayout(self)
 
@@ -277,7 +277,7 @@ class IgnoreDialog(QDialog):
         self._pattern_widget = _PatternListWidget(ignore.patterns)
         layout.addWidget(self._pattern_widget, 1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -321,7 +321,7 @@ class RestoreDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # --- Left panel: commit timeline ---
         left = QWidget()
@@ -362,10 +362,10 @@ class RestoreDialog(QDialog):
         self._file_tree = QTreeWidget()
         self._file_tree.setHeaderLabels(['File', 'Status'])
         self._file_tree.header().setStretchLastSection(False)
-        self._file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self._file_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._file_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._file_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self._file_tree.itemClicked.connect(self._on_file_clicked)
-        self._file_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._file_tree.customContextMenuRequested.connect(self._file_context_menu)
         mid_layout.addWidget(self._file_tree)
         splitter.addWidget(mid)
@@ -392,7 +392,7 @@ class RestoreDialog(QDialog):
         self._preview_font = self._load_preview_font()
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
-        self._preview.setLineWrapMode(QTextEdit.NoWrap)
+        self._preview.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self._preview.setFont(self._preview_font)
         self._preview.setStyleSheet(
             'QTextEdit { background-color: #1e1e1e; color: #cccccc; }'
@@ -424,12 +424,12 @@ class RestoreDialog(QDialog):
         super().showEvent(event)
         if not hasattr(self, '_splitter_fitted'):
             self._splitter_fitted = True
-            from PyQt5.QtCore import QTimer
+            from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, self._fit_splitter)
 
     def _fit_splitter(self):
             # Temporarily switch to ResizeToContents to measure the ACTUAL text width
-            self._file_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            self._file_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
 
             # 1. Calculate width for the Commit List (Left)
             max_w = 0
@@ -462,7 +462,7 @@ class RestoreDialog(QDialog):
 
             # Optional: Switch back to Stretch if you want the filename column
             # to fill whatever width the middle pane has.
-            self._file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+            self._file_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
 
     @staticmethod
     def _format_timestamp(raw: str) -> str:
@@ -506,15 +506,15 @@ class RestoreDialog(QDialog):
             files = get_commit_files(self._git_dir, self._work_tree, self._current_hash)
             for f in files:
                 item = QTreeWidgetItem([f['path'], f['status']])
-                item.setCheckState(0, Qt.Checked)
-                item.setData(0, Qt.UserRole, f['path'])
+                item.setCheckState(0, Qt.CheckState.Checked)
+                item.setData(0, Qt.ItemDataRole.UserRole, f['path'])
                 self._file_tree.addTopLevelItem(item)
         else:
             files = get_full_tree_at_commit(self._git_dir, self._current_hash)
             for fp in files:
                 item = QTreeWidgetItem([fp, ''])
-                item.setCheckState(0, Qt.Checked)
-                item.setData(0, Qt.UserRole, fp)
+                item.setCheckState(0, Qt.CheckState.Checked)
+                item.setData(0, Qt.ItemDataRole.UserRole, fp)
                 self._file_tree.addTopLevelItem(item)
 
         n = self._file_tree.topLevelItemCount()
@@ -523,18 +523,18 @@ class RestoreDialog(QDialog):
 
         if n == 1:
             item = self._file_tree.topLevelItem(0)
-            self._selected_file = item.data(0, Qt.UserRole)
+            self._selected_file = item.data(0, Qt.ItemDataRole.UserRole)
             self._selected_status = item.text(1)
             self._file_tree.setCurrentItem(item)
             self._refresh_preview()
 
     def _select_all(self):
         for i in range(self._file_tree.topLevelItemCount()):
-            self._file_tree.topLevelItem(i).setCheckState(0, Qt.Checked)
+            self._file_tree.topLevelItem(i).setCheckState(0, Qt.CheckState.Checked)
 
     def _select_none(self):
         for i in range(self._file_tree.topLevelItemCount()):
-            self._file_tree.topLevelItem(i).setCheckState(0, Qt.Unchecked)
+            self._file_tree.topLevelItem(i).setCheckState(0, Qt.CheckState.Unchecked)
 
     @staticmethod
     def _is_binary(data: bytes) -> bool:
@@ -583,7 +583,7 @@ class RestoreDialog(QDialog):
         item = self._file_tree.itemAt(pos)
         if not item:
             return
-        rel_path = item.data(0, Qt.UserRole)
+        rel_path = item.data(0, Qt.ItemDataRole.UserRole)
         if not rel_path:
             return
         full_path = Path(self._watch_path) / rel_path
@@ -606,7 +606,7 @@ class RestoreDialog(QDialog):
             subprocess.Popen(f'code "{full_path}"', shell=True)
 
     def _on_file_clicked(self, item: QTreeWidgetItem, column: int):
-        self._selected_file = item.data(0, Qt.UserRole)
+        self._selected_file = item.data(0, Qt.ItemDataRole.UserRole)
         self._selected_status = item.text(1)
         self._refresh_preview()
 
@@ -654,8 +654,8 @@ class RestoreDialog(QDialog):
         checked = []
         for i in range(self._file_tree.topLevelItemCount()):
             item = self._file_tree.topLevelItem(i)
-            if item.checkState(0) == Qt.Checked:
-                fp = item.data(0, Qt.UserRole)
+            if item.checkState(0) == Qt.CheckState.Checked:
+                fp = item.data(0, Qt.ItemDataRole.UserRole)
                 if fp:
                     checked.append(fp)
         if not checked:
@@ -670,12 +670,12 @@ class RestoreDialog(QDialog):
         exported = export_files(self._git_dir, self._current_hash, checked, dest)
         if exported:
             msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Information)
+            msg.setIcon(QMessageBox.Icon.Information)
             msg.setWindowTitle('Export Complete')
             msg.setText(f'Exported {len(exported)} file(s) to:\n{dest}')
-            msg.addButton(QMessageBox.Ok)
-            browse_btn = msg.addButton('Open Folder', QMessageBox.ActionRole)
-            msg.exec_()
+            msg.addButton(QMessageBox.StandardButton.Ok)
+            browse_btn = msg.addButton('Open Folder', QMessageBox.ButtonRole.ActionRole)
+            msg.exec()
             if msg.clickedButton() == browse_btn:
                 os.startfile(str(dest))
         else:
@@ -747,7 +747,7 @@ class MainWindow(QMainWindow):
         self._shadows_base: Path = DEFAULT_SHADOWS_BASE
 
         # --- Central widget with splitter ---
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left panel: directory list + buttons
         left = QWidget()
@@ -756,7 +756,7 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(QLabel('Watched Directories'))
         self._dir_list = QListWidget()
-        self._dir_list.setSelectionMode(QListWidget.SingleSelection)
+        self._dir_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         left_layout.addWidget(self._dir_list)
 
         add_btn = QPushButton('Add Directory...')
@@ -820,7 +820,7 @@ class MainWindow(QMainWindow):
 
     def _add_directory(self):
         dlg = AddDirectoryDialog(self)
-        if dlg.exec_() != QDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         resolved = dlg.get_path()
         if not resolved:
@@ -840,15 +840,15 @@ class MainWindow(QMainWindow):
         item = self._selected_item()
         if not item:
             return
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         reply = QMessageBox.question(
             self, 'Remove Directory',
             f'Stop watching {path}?\n\n'
             'History is preserved in the shadow repo and will be reused\n'
             'if you add this directory again.',
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         self._stop_engine(path)
         self._dir_list.takeItem(self._dir_list.row(item))
@@ -861,12 +861,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'No Selection',
                                    'Select a directory first.')
             return
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         engine = self._engines.get(path)
         if not engine:
             return
         dlg = IgnoreDialog(engine.ignore, self)
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             engine.ignore.set_patterns(dlg.get_patterns())
             self._append_log(Path(path).name, 'Ignore patterns updated.')
 
@@ -874,7 +874,7 @@ class MainWindow(QMainWindow):
         item = self._selected_item()
         if not item:
             return
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         engine = self._engines.get(path)
         if not engine:
             return
@@ -891,14 +891,14 @@ class MainWindow(QMainWindow):
         if not item:
             QMessageBox.information(self, 'No Selection', 'Select a directory first.')
             return
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         shadow = self._shadows_base / shadow_name(path)
         git_dir = shadow / '.git'
         if not git_dir.exists():
             QMessageBox.warning(self, 'No History', 'No shadow repo found for this directory.')
             return
         dlg = RestoreDialog(path, shadow, self)
-        dlg.exec_()
+        dlg.exec()
 
     # --- Engine lifecycle ---
 
@@ -915,7 +915,7 @@ class MainWindow(QMainWindow):
             self._append_log(label, f'ERROR: {e}')
 
         item = QListWidgetItem(path)
-        item.setData(Qt.UserRole, path)
+        item.setData(Qt.ItemDataRole.UserRole, path)
         self._dir_list.addItem(item)
         self._update_status()
 
@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
                             # Update list item text
                             for i in range(self._dir_list.count()):
                                 item = self._dir_list.item(i)
-                                if item.data(Qt.UserRole) == path:
+                                if item.data(Qt.ItemDataRole.UserRole) == path:
                                     item.setText(f'{path}  (paused)')
                                     break
         except (json.JSONDecodeError, KeyError):
@@ -998,4 +998,4 @@ if __name__ == '__main__':
     app.setStyle('Fusion')
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
