@@ -9,5 +9,9 @@
   "restore_size": [
     1713,
     925
-  ]
+  ],
+  "restore_font": {
+    "family": "Fira Code",
+    "size": 9
+  }
 }

@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QPlainTextEdit, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QMessageBox, QDialog, QInputDialog,
     QLabel, QDialogButtonBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
-    QRadioButton, QButtonGroup, QHeaderView,
+    QRadioButton, QButtonGroup, QHeaderView, QTextEdit, QFontDialog,
 )
 
 from BaconSaver import (
@@ -377,12 +377,16 @@ class RestoreDialog(QDialog):
         view_row.addWidget(self._view_content)
         view_row.addWidget(self._view_diff)
         view_row.addStretch()
+        font_btn = QPushButton('Font...')
+        font_btn.clicked.connect(self._pick_font)
+        view_row.addWidget(font_btn)
         right_layout.addLayout(view_row)
-        self._preview = QPlainTextEdit()
+        self._preview_font = self._load_preview_font()
+        self._preview = QTextEdit()
         self._preview.setReadOnly(True)
-        self._preview.setFont(QFont('Consolas', 9))
+        self._preview.setFont(self._preview_font)
         self._preview.setStyleSheet(
-            'QPlainTextEdit { background-color: #1e1e1e; color: #cccccc; }'
+            'QTextEdit { background-color: #1e1e1e; color: #cccccc; }'
         )
         right_layout.addWidget(self._preview)
         splitter.addWidget(right)
@@ -533,6 +537,39 @@ class RestoreDialog(QDialog):
         # Same heuristic as git: binary if null bytes present in the sample
         return b'\x00' in chunk
 
+    @staticmethod
+    def _visible_whitespace(text: str) -> str:
+        return text.replace('\t', '→\t').replace(' ', '·')
+
+    @staticmethod
+    def _html_escape(text: str) -> str:
+        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def _show_diff_html(self, diff_text: str):
+        lines = []
+        for raw_line in diff_text.splitlines():
+            escaped = self._html_escape(raw_line)
+            visible = self._visible_whitespace(escaped)
+            if raw_line.startswith('+++') or raw_line.startswith('---'):
+                lines.append(f'<span style="color:#569cd6;font-weight:bold">{visible}</span>')
+            elif raw_line.startswith('@@'):
+                lines.append(f'<span style="color:#c586c0">{visible}</span>')
+            elif raw_line.startswith('+'):
+                lines.append(f'<span style="color:#4ec9b0;background-color:#1e3a1e">{visible}</span>')
+            elif raw_line.startswith('-'):
+                lines.append(f'<span style="color:#f44747;background-color:#3a1e1e">{visible}</span>')
+            else:
+                lines.append(f'<span style="color:#cccccc">{visible}</span>')
+        family = self._preview_font.family()
+        size = self._preview_font.pointSize()
+        html = (
+            f'<pre style="font-family:{family};font-size:{size}pt;background-color:#1e1e1e;'
+            'color:#cccccc;margin:0;padding:4px">'
+            + '<br>'.join(lines)
+            + '</pre>'
+        )
+        self._preview.setHtml(html)
+
     def _on_file_clicked(self, item: QTreeWidgetItem, column: int):
         self._selected_file = item.data(0, Qt.UserRole)
         self._selected_status = item.text(1)
@@ -553,7 +590,10 @@ class RestoreDialog(QDialog):
         if self._view_diff.isChecked():
             diff_text = get_diff_for_commit(self._git_dir, self._work_tree,
                                             self._current_hash, fp)
-            self._preview.setPlainText(diff_text if diff_text.strip() else '[No diff — file unchanged or binary]')
+            if diff_text.strip():
+                self._show_diff_html(diff_text)
+            else:
+                self._preview.setPlainText('[No diff — file unchanged or binary]')
             return
 
         try:
@@ -591,12 +631,45 @@ class RestoreDialog(QDialog):
 
         exported = export_files(self._git_dir, self._current_hash, checked, dest)
         if exported:
-            QMessageBox.information(
-                self, 'Export Complete',
-                f'Exported {len(exported)} file(s) to:\n{dest}'
-            )
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle('Export Complete')
+            msg.setText(f'Exported {len(exported)} file(s) to:\n{dest}')
+            msg.addButton(QMessageBox.Ok)
+            browse_btn = msg.addButton('Open Folder', QMessageBox.ActionRole)
+            msg.exec_()
+            if msg.clickedButton() == browse_btn:
+                os.startfile(str(dest))
         else:
             QMessageBox.warning(self, 'Export Failed', 'No files could be exported.')
+
+    def _pick_font(self):
+        font, ok = QFontDialog.getFont(self._preview_font, self)
+        if ok:
+            self._preview_font = font
+            self._preview.setFont(font)
+            self._save_preview_font()
+            self._refresh_preview()
+
+    @staticmethod
+    def _load_preview_font() -> QFont:
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+            f = data.get('restore_font', {})
+            return QFont(f.get('family', 'Consolas'), f.get('size', 9))
+        except Exception:
+            return QFont('Consolas', 9)
+
+    def _save_preview_font(self):
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+        except Exception:
+            data = {}
+        data['restore_font'] = {
+            'family': self._preview_font.family(),
+            'size': self._preview_font.pointSize(),
+        }
+        CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
     @staticmethod
     def _load_size() -> list[int]:
