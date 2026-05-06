@@ -10,10 +10,15 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QPlainTextEdit, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QMessageBox, QDialog, QInputDialog,
-    QLabel, QDialogButtonBox, QCheckBox,
+    QLabel, QDialogButtonBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
+    QRadioButton, QButtonGroup, QHeaderView,
 )
 
-from BaconSaver import WatchEngine, IgnoreFilter, IGNORE_PRESETS, ALWAYS_IGNORED, APP_DIR, DEFAULT_SHADOWS_BASE
+from BaconSaver import (
+    WatchEngine, IgnoreFilter, IGNORE_PRESETS, ALWAYS_IGNORED, APP_DIR, DEFAULT_SHADOWS_BASE,
+    get_commit_log, get_commit_files, get_file_at_commit, get_full_tree_at_commit,
+    get_diff_for_commit, export_files, shadow_name,
+)
 
 
 CONFIG_FILE = APP_DIR / 'config.json'
@@ -287,6 +292,335 @@ class IgnoreDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Restore dialog
+# ---------------------------------------------------------------------------
+
+class RestoreDialog(QDialog):
+    """Browse commit history and export files from any point in time."""
+
+    def __init__(self, watch_path: str, shadow_path: Path, parent=None):
+        super().__init__(parent)
+        self._watch_path = watch_path
+        self._shadow_path = shadow_path
+        self._git_dir = shadow_path / '.git'
+        self._work_tree = Path(watch_path)
+        self._current_hash: str | None = None
+        self._selected_file: str | None = None
+        self._selected_status: str = ''
+
+        self.setWindowTitle(f'Restore — {watch_path}')
+        self.setMinimumSize(600, 400)
+        size = self._load_size()
+        self.resize(size[0], size[1])
+
+        outer = QVBoxLayout(self)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        # --- Left panel: commit timeline ---
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(4, 4, 4, 4)
+        left_layout.addWidget(QLabel('Snapshots'))
+        self._commit_list = QListWidget()
+        self._commit_list.currentRowChanged.connect(self._on_commit_selected)
+        left_layout.addWidget(self._commit_list)
+        splitter.addWidget(left)
+
+        # --- Middle panel: file list ---
+        mid = QWidget()
+        mid_layout = QVBoxLayout(mid)
+        mid.setMinimumWidth(0)
+        mid_layout.setContentsMargins(4, 4, 4, 4)
+
+        mode_row = QHBoxLayout()
+        self._mode_changed = QRadioButton('Changed files')
+        self._mode_all = QRadioButton('Full snapshot')
+        self._mode_changed.setChecked(True)
+        mode_group = QButtonGroup(self)
+        mode_group.addButton(self._mode_changed)
+        mode_group.addButton(self._mode_all)
+        self._mode_changed.toggled.connect(self._refresh_file_list)
+        mode_row.addWidget(self._mode_changed)
+        mode_row.addWidget(self._mode_all)
+        mode_row.addStretch()
+
+        self._select_all_btn = QPushButton('Select All')
+        self._select_all_btn.clicked.connect(self._select_all)
+        self._select_none_btn = QPushButton('Select None')
+        self._select_none_btn.clicked.connect(self._select_none)
+        mode_row.addWidget(self._select_all_btn)
+        mode_row.addWidget(self._select_none_btn)
+        mid_layout.addLayout(mode_row)
+
+        self._file_tree = QTreeWidget()
+        self._file_tree.setHeaderLabels(['File', 'Status'])
+        self._file_tree.header().setStretchLastSection(False)
+        self._file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._file_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._file_tree.itemClicked.connect(self._on_file_clicked)
+        mid_layout.addWidget(self._file_tree)
+        splitter.addWidget(mid)
+
+        # --- Right panel: preview / diff ---
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(4, 4, 4, 4)
+        view_row = QHBoxLayout()
+        self._view_content = QRadioButton('Content')
+        self._view_diff = QRadioButton('Diff')
+        self._view_content.setChecked(True)
+        view_group = QButtonGroup(self)
+        view_group.addButton(self._view_content)
+        view_group.addButton(self._view_diff)
+        self._view_content.toggled.connect(self._refresh_preview)
+        view_row.addWidget(self._view_content)
+        view_row.addWidget(self._view_diff)
+        view_row.addStretch()
+        right_layout.addLayout(view_row)
+        self._preview = QPlainTextEdit()
+        self._preview.setReadOnly(True)
+        self._preview.setFont(QFont('Consolas', 9))
+        self._preview.setStyleSheet(
+            'QPlainTextEdit { background-color: #1e1e1e; color: #cccccc; }'
+        )
+        right_layout.addWidget(self._preview)
+        splitter.addWidget(right)
+
+        self._splitter = splitter
+        outer.addWidget(splitter, 1)
+
+        # --- Bottom: export ---
+        bottom = QHBoxLayout()
+        self._file_count_label = QLabel('')
+        bottom.addWidget(self._file_count_label)
+        bottom.addStretch()
+        self._export_btn = QPushButton('Export Selected')
+        self._export_btn.setEnabled(False)
+        self._export_btn.clicked.connect(self._export)
+        bottom.addWidget(self._export_btn)
+        close_btn = QPushButton('Close')
+        close_btn.clicked.connect(self.reject)
+        bottom.addWidget(close_btn)
+        outer.addLayout(bottom)
+
+        self._commits: list[dict] = []
+        self._load_commits()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not hasattr(self, '_splitter_fitted'):
+            self._splitter_fitted = True
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, self._fit_splitter)
+
+    def _fit_splitter(self):
+            # Temporarily switch to ResizeToContents to measure the ACTUAL text width
+            self._file_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+
+            # 1. Calculate width for the Commit List (Left)
+            max_w = 0
+            model = self._commit_list.model()
+            for i in range(model.rowCount()):
+                w = self._commit_list.sizeHintForIndex(model.index(i, 0)).width()
+                if w > max_w:
+                    max_w = w
+
+            left_w = (max_w +
+                      self._commit_list.verticalScrollBar().sizeHint().width() +
+                      (self._commit_list.frameWidth() * 2) + 15)
+
+            # 2. Calculate width for the File Tree (Middle)
+            self._file_tree.resizeColumnToContents(0)
+            self._file_tree.resizeColumnToContents(1)
+            mid_w = (self._file_tree.columnWidth(0) +
+                     self._file_tree.columnWidth(1) +
+                     (self._file_tree.frameWidth() * 2) + 25)
+
+            # 3. Apply sizes and Stretch Factors
+            # Using a very large number (10000) for the right pane forces the
+            # first two to collapse to their exact calculated widths.
+            self._splitter.setSizes([left_w, mid_w, 10000])
+
+            # Ensure only the right pane (index 2) expands when you resize the window
+            self._splitter.setStretchFactor(0, 0)
+            self._splitter.setStretchFactor(1, 0)
+            self._splitter.setStretchFactor(2, 1)
+
+            # Optional: Switch back to Stretch if you want the filename column
+            # to fill whatever width the middle pane has.
+            self._file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+
+    @staticmethod
+    def _format_timestamp(raw: str) -> str:
+        """'2026-05-05 14:03:53 -0700' -> '2026-05-05  14:03:53'"""
+        parts = raw.split()
+        if len(parts) >= 2:
+            return f'{parts[0]}  {parts[1]}'
+        return raw
+
+    def _load_commits(self):
+        self._commits = get_commit_log(self._git_dir, self._work_tree)
+        self._commit_list.clear()
+        for c in self._commits:
+            ts = self._format_timestamp(c['timestamp'])
+            changed = get_commit_files(self._git_dir, self._work_tree, c['hash'])
+            if len(changed) == 1:
+                detail = Path(changed[0]['path']).name
+            else:
+                detail = f'{len(changed)} files'
+            self._commit_list.addItem(f'{ts}   ({detail})')
+        if self._commits:
+            self._commit_list.setCurrentRow(0)
+
+    def _on_commit_selected(self, row: int):
+        if row < 0 or row >= len(self._commits):
+            self._current_hash = None
+            self._file_tree.clear()
+            self._preview.clear()
+            self._export_btn.setEnabled(False)
+            return
+        self._current_hash = self._commits[row]['hash']
+        self._refresh_file_list()
+
+    def _refresh_file_list(self):
+        self._file_tree.clear()
+        self._preview.clear()
+        if not self._current_hash:
+            return
+
+        if self._mode_changed.isChecked():
+            files = get_commit_files(self._git_dir, self._work_tree, self._current_hash)
+            for f in files:
+                item = QTreeWidgetItem([f['path'], f['status']])
+                item.setCheckState(0, Qt.Checked)
+                item.setData(0, Qt.UserRole, f['path'])
+                self._file_tree.addTopLevelItem(item)
+        else:
+            files = get_full_tree_at_commit(self._git_dir, self._current_hash)
+            for fp in files:
+                item = QTreeWidgetItem([fp, ''])
+                item.setCheckState(0, Qt.Checked)
+                item.setData(0, Qt.UserRole, fp)
+                self._file_tree.addTopLevelItem(item)
+
+        n = self._file_tree.topLevelItemCount()
+        self._file_count_label.setText(f'{n} file(s)')
+        self._export_btn.setEnabled(n > 0)
+
+        if n == 1:
+            item = self._file_tree.topLevelItem(0)
+            self._selected_file = item.data(0, Qt.UserRole)
+            self._selected_status = item.text(1)
+            self._file_tree.setCurrentItem(item)
+            self._refresh_preview()
+
+    def _select_all(self):
+        for i in range(self._file_tree.topLevelItemCount()):
+            self._file_tree.topLevelItem(i).setCheckState(0, Qt.Checked)
+
+    def _select_none(self):
+        for i in range(self._file_tree.topLevelItemCount()):
+            self._file_tree.topLevelItem(i).setCheckState(0, Qt.Unchecked)
+
+    @staticmethod
+    def _is_binary(data: bytes) -> bool:
+        if not data:
+            return False
+        if data[:2] in (b'\xff\xfe', b'\xfe\xff') or data[:3] == b'\xef\xbb\xbf':
+            return False
+        chunk = data[:8192]
+        # Same heuristic as git: binary if null bytes present in the sample
+        return b'\x00' in chunk
+
+    def _on_file_clicked(self, item: QTreeWidgetItem, column: int):
+        self._selected_file = item.data(0, Qt.UserRole)
+        self._selected_status = item.text(1)
+        self._refresh_preview()
+
+    def _refresh_preview(self):
+        fp = getattr(self, '_selected_file', None)
+        if not fp or not self._current_hash:
+            self._preview.clear()
+            return
+
+        status = getattr(self, '_selected_status', '')
+
+        if status == 'D':
+            self._preview.setPlainText(f'[File deleted in this snapshot]')
+            return
+
+        if self._view_diff.isChecked():
+            diff_text = get_diff_for_commit(self._git_dir, self._work_tree,
+                                            self._current_hash, fp)
+            self._preview.setPlainText(diff_text if diff_text.strip() else '[No diff — file unchanged or binary]')
+            return
+
+        try:
+            content = get_file_at_commit(self._git_dir, self._current_hash, fp)
+            if self._is_binary(content):
+                self._preview.setPlainText(f'[Binary file — {len(content):,} bytes]')
+            else:
+                if content[:2] == b'\xff\xfe':
+                    self._preview.setPlainText(content.decode('utf-16-le', errors='replace'))
+                elif content[:2] == b'\xfe\xff':
+                    self._preview.setPlainText(content.decode('utf-16-be', errors='replace'))
+                else:
+                    self._preview.setPlainText(content.decode('utf-8', errors='replace'))
+        except RuntimeError as e:
+            self._preview.setPlainText(str(e))
+
+    def _export(self):
+        if not self._current_hash:
+            return
+        checked = []
+        for i in range(self._file_tree.topLevelItemCount()):
+            item = self._file_tree.topLevelItem(i)
+            if item.checkState(0) == Qt.Checked:
+                fp = item.data(0, Qt.UserRole)
+                if fp:
+                    checked.append(fp)
+        if not checked:
+            QMessageBox.information(self, 'Nothing Selected', 'No files are checked.')
+            return
+
+        import time as _time
+        ts = _time.strftime('%Y%m%d_%H%M%S')
+        downloads = Path.home() / 'Downloads'
+        dest = downloads / f'BaconSaver_restore_{ts}'
+
+        exported = export_files(self._git_dir, self._current_hash, checked, dest)
+        if exported:
+            QMessageBox.information(
+                self, 'Export Complete',
+                f'Exported {len(exported)} file(s) to:\n{dest}'
+            )
+        else:
+            QMessageBox.warning(self, 'Export Failed', 'No files could be exported.')
+
+    @staticmethod
+    def _load_size() -> list[int]:
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+            s = data.get('restore_size', [800, 600])
+            return [int(s[0]), int(s[1])]
+        except Exception:
+            return [800, 600]
+
+    def _save_size(self):
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+        except Exception:
+            data = {}
+        data['restore_size'] = [self.width(), self.height()]
+        CONFIG_FILE.write_text(json.dumps(data, indent=2))
+
+    def closeEvent(self, event):
+        self._save_size()
+        event.accept()
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 
@@ -331,8 +665,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(ignore_btn)
 
         restore_btn = QPushButton('Restore...')
-        restore_btn.setEnabled(False)
-        restore_btn.setToolTip('Coming soon')
+        restore_btn.clicked.connect(self._restore)
         left_layout.addWidget(restore_btn)
         self._restore_btn = restore_btn
 
@@ -440,6 +773,20 @@ class MainWindow(QMainWindow):
             item.setText(f'{path}  (paused)')
         self._save_config()
 
+    def _restore(self):
+        row = self._dir_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, 'No Selection', 'Select a directory first.')
+            return
+        path = self._dir_list.item(row).data(Qt.UserRole)
+        shadow = self._shadows_base / shadow_name(path)
+        git_dir = shadow / '.git'
+        if not git_dir.exists():
+            QMessageBox.warning(self, 'No History', 'No shadow repo found for this directory.')
+            return
+        dlg = RestoreDialog(path, shadow, self)
+        dlg.exec_()
+
     # --- Engine lifecycle ---
 
     def _start_engine(self, path: str, initial_patterns: list[str] | None = None):
@@ -469,13 +816,15 @@ class MainWindow(QMainWindow):
 
     def _save_config(self):
         self._shadows_base.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+        except Exception:
+            data = {}
         entries = []
         for path, engine in self._engines.items():
             entries.append({'path': path, 'paused': engine.is_paused})
-        data = {
-            'shadows_base': str(self._shadows_base),
-            'watched': entries,
-        }
+        data['shadows_base'] = str(self._shadows_base)
+        data['watched'] = entries
         CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
     def _load_config(self):

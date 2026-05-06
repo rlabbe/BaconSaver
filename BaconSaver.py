@@ -166,6 +166,84 @@ def _init_shadow_repo(watch: Path, shadow: Path, ignore: IgnoreFilter,
 
 
 # ---------------------------------------------------------------------------
+# History queries — read-only, used by restore UI
+# ---------------------------------------------------------------------------
+
+def get_commit_log(git_dir: Path, work_tree: Path) -> list[dict]:
+    """Return list of {'hash', 'timestamp', 'message'} newest first."""
+    r = _git(['log', '--format=%H\t%ai\t%s'], git_dir, work_tree, check=False)
+    commits = []
+    for line in r.stdout.strip().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('\t', 2)
+        if len(parts) == 3:
+            commits.append({
+                'hash': parts[0],
+                'timestamp': parts[1],
+                'message': parts[2],
+            })
+    return commits
+
+
+def get_commit_files(git_dir: Path, work_tree: Path, commit_hash: str) -> list[dict]:
+    """Return files changed in a commit: list of {'status', 'path'}.
+    Status: A=added, M=modified, D=deleted."""
+    r = _git(['diff-tree', '--no-commit-id', '-r', '--name-status', commit_hash],
+             git_dir, work_tree, check=False)
+    files = []
+    for line in r.stdout.strip().splitlines():
+        if '\t' in line:
+            status, path = line.split('\t', 1)
+            files.append({'status': status.strip(), 'path': path.strip()})
+    return files
+
+
+def get_file_at_commit(git_dir: Path, commit_hash: str, file_path: str) -> bytes:
+    """Return raw file content at a specific commit."""
+    r = subprocess.run(
+        ['git', f'--git-dir={git_dir}', 'show', f'{commit_hash}:{file_path}'],
+        capture_output=True
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f'Could not retrieve {file_path} at {commit_hash}')
+    return r.stdout
+
+
+def get_full_tree_at_commit(git_dir: Path, commit_hash: str) -> list[str]:
+    """Return list of all file paths in the tree at a commit."""
+    r = _git(['ls-tree', '-r', '--name-only', commit_hash], git_dir, check=False)
+    return [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
+
+
+def get_diff_for_commit(git_dir: Path, work_tree: Path, commit_hash: str,
+                        file_path: str | None = None) -> str:
+    """Return unified diff for a commit (vs its parent). Optionally filter to one file."""
+    args = ['diff', f'{commit_hash}~1', commit_hash, '--']
+    if file_path:
+        args.append(file_path)
+    r = _git(args, git_dir, work_tree, check=False)
+    return r.stdout
+
+
+def export_files(git_dir: Path, commit_hash: str, file_paths: list[str],
+                 dest_dir: Path) -> list[str]:
+    """Export specific files from a commit to dest_dir, preserving directory structure.
+    Returns list of exported file paths."""
+    exported = []
+    for fp in file_paths:
+        try:
+            content = get_file_at_commit(git_dir, commit_hash, fp)
+        except RuntimeError:
+            continue
+        out = dest_dir / fp
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(content)
+        exported.append(fp)
+    return exported
+
+
+# ---------------------------------------------------------------------------
 # Watchdog handler
 # ---------------------------------------------------------------------------
 
@@ -240,7 +318,7 @@ class _Handler(FileSystemEventHandler):
     def on_moved(self, event):
         if not event.is_directory:
             self._record('deleted', event.src_path)
-            self._record('upsert', event.dest_path)
+            self._record('changed', event.dest_path)
 
 
 # ---------------------------------------------------------------------------
