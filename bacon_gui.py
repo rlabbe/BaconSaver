@@ -1,6 +1,7 @@
 import fnmatch
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QPlainTextEdit, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QMessageBox, QDialog, QInputDialog,
     QLabel, QDialogButtonBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
-    QRadioButton, QButtonGroup, QHeaderView, QTextEdit, QFontDialog,
+    QRadioButton, QButtonGroup, QHeaderView, QTextEdit, QFontDialog, QMenu, QAction,
 )
 
 from BaconSaver import (
@@ -252,6 +253,9 @@ class IgnoreDialog(QDialog):
         self.setWindowTitle('Edit Ignore Patterns')
         self.setMinimumSize(450, 400)
 
+        if x <= 0:
+            x = 1
+
         layout = QVBoxLayout(self)
 
         # Load preset buttons — adds patterns from preset without removing existing
@@ -307,6 +311,8 @@ class RestoreDialog(QDialog):
         self._current_hash: str | None = None
         self._selected_file: str | None = None
         self._selected_status: str = ''
+        self._tabs_as_spaces = True
+        self._tab_width = 4
 
         self.setWindowTitle(f'Restore — {watch_path}')
         self.setMinimumSize(600, 400)
@@ -359,6 +365,8 @@ class RestoreDialog(QDialog):
         self._file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self._file_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._file_tree.itemClicked.connect(self._on_file_clicked)
+        self._file_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._file_tree.customContextMenuRequested.connect(self._file_context_menu)
         mid_layout.addWidget(self._file_tree)
         splitter.addWidget(mid)
 
@@ -384,6 +392,7 @@ class RestoreDialog(QDialog):
         self._preview_font = self._load_preview_font()
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
+        self._preview.setLineWrapMode(QTextEdit.NoWrap)
         self._preview.setFont(self._preview_font)
         self._preview.setStyleSheet(
             'QTextEdit { background-color: #1e1e1e; color: #cccccc; }'
@@ -570,6 +579,32 @@ class RestoreDialog(QDialog):
         )
         self._preview.setHtml(html)
 
+    def _file_context_menu(self, pos):
+        item = self._file_tree.itemAt(pos)
+        if not item:
+            return
+        rel_path = item.data(0, Qt.UserRole)
+        if not rel_path:
+            return
+        full_path = Path(self._watch_path) / rel_path
+
+        menu = QMenu(self)
+
+        copy_action = menu.addAction('Copy Full Path')
+        explorer_action = menu.addAction('Open in Explorer')
+        code_action = menu.addAction('Open with Code')
+
+        action = menu.exec_(self._file_tree.viewport().mapToGlobal(pos))
+        if action == copy_action:
+            QApplication.clipboard().setText(str(full_path))
+        elif action == explorer_action:
+            if full_path.exists():
+                subprocess.Popen(['explorer', '/select,', str(full_path)])
+            else:
+                subprocess.Popen(['explorer', str(full_path.parent)])
+        elif action == code_action:
+            subprocess.Popen(f'code "{full_path}"', shell=True)
+
     def _on_file_clicked(self, item: QTreeWidgetItem, column: int):
         self._selected_file = item.data(0, Qt.UserRole)
         self._selected_status = item.text(1)
@@ -602,11 +637,14 @@ class RestoreDialog(QDialog):
                 self._preview.setPlainText(f'[Binary file — {len(content):,} bytes]')
             else:
                 if content[:2] == b'\xff\xfe':
-                    self._preview.setPlainText(content.decode('utf-16-le', errors='replace'))
+                    text = content.decode('utf-16-le', errors='replace')
                 elif content[:2] == b'\xfe\xff':
-                    self._preview.setPlainText(content.decode('utf-16-be', errors='replace'))
+                    text = content.decode('utf-16-be', errors='replace')
                 else:
-                    self._preview.setPlainText(content.decode('utf-8', errors='replace'))
+                    text = content.decode('utf-8', errors='replace')
+                if self._tabs_as_spaces:
+                    text = text.replace('\t', ' ' * self._tab_width)
+                self._preview.setPlainText(text)
         except RuntimeError as e:
             self._preview.setPlainText(str(e))
 
@@ -794,11 +832,14 @@ class MainWindow(QMainWindow):
         self._start_engine(resolved, initial_patterns=dlg.get_patterns())
         self._save_config()
 
+    def _selected_item(self) -> QListWidgetItem | None:
+        items = self._dir_list.selectedItems()
+        return items[0] if items else None
+
     def _remove_directory(self):
-        row = self._dir_list.currentRow()
-        if row < 0:
+        item = self._selected_item()
+        if not item:
             return
-        item = self._dir_list.item(row)
         path = item.data(Qt.UserRole)
         reply = QMessageBox.question(
             self, 'Remove Directory',
@@ -810,17 +851,17 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         self._stop_engine(path)
-        self._dir_list.takeItem(row)
+        self._dir_list.takeItem(self._dir_list.row(item))
         self._save_config()
         self._update_status()
 
     def _edit_ignores(self):
-        row = self._dir_list.currentRow()
-        if row < 0:
+        item = self._selected_item()
+        if not item:
             QMessageBox.information(self, 'No Selection',
                                    'Select a directory first.')
             return
-        path = self._dir_list.item(row).data(Qt.UserRole)
+        path = item.data(Qt.UserRole)
         engine = self._engines.get(path)
         if not engine:
             return
@@ -830,10 +871,9 @@ class MainWindow(QMainWindow):
             self._append_log(Path(path).name, 'Ignore patterns updated.')
 
     def _toggle_pause(self):
-        row = self._dir_list.currentRow()
-        if row < 0:
+        item = self._selected_item()
+        if not item:
             return
-        item = self._dir_list.item(row)
         path = item.data(Qt.UserRole)
         engine = self._engines.get(path)
         if not engine:
@@ -847,11 +887,11 @@ class MainWindow(QMainWindow):
         self._save_config()
 
     def _restore(self):
-        row = self._dir_list.currentRow()
-        if row < 0:
+        item = self._selected_item()
+        if not item:
             QMessageBox.information(self, 'No Selection', 'Select a directory first.')
             return
-        path = self._dir_list.item(row).data(Qt.UserRole)
+        path = item.data(Qt.UserRole)
         shadow = self._shadows_base / shadow_name(path)
         git_dir = shadow / '.git'
         if not git_dir.exists():

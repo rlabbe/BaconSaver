@@ -4,14 +4,18 @@
     {
       "path": "D:\\work\\et",
       "paused": false
+    },
+    {
+      "path": "D:\\dev\\BaconSaver",
+      "paused": false
     }
   ],
   "restore_size": [
-    1713,
-    925
+    1840,
+    907
   ],
   "restore_font": {
     "family": "Fira Code",
-    "size": 9
+    "size": 10
   }
 }
