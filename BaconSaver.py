@@ -11,7 +11,6 @@ from watchdog.observers import Observer
 
 
 APP_DIR = Path(__file__).parent
-DEFAULT_SHADOWS_BASE = Path('E:/BaconSaverData/shadows')
 
 # Always ignored — not user-removable, required for correct operation
 ALWAYS_IGNORED = ['.git']
@@ -113,20 +112,63 @@ class IgnoreFilter:
 # Git helpers
 # ---------------------------------------------------------------------------
 
+def git_version() -> tuple[int, ...]:
+    r = subprocess.run(['git', '--version'], capture_output=True, text=True, timeout=10.0)
+    parts = r.stdout.strip().split()
+    if len(parts) >= 3:
+        ver = parts[2]
+        nums = []
+        for p in ver.split('.'):
+            if p.isdigit():
+                nums.append(int(p))
+            else:
+                break
+        return tuple(nums) if nums else (0,)
+    return (0,)
+
+
 def shadow_name(watch_path: str) -> str:
     return re.sub(r'[^a-zA-Z0-9]', '_', watch_path).strip('_')
 
 
+def _cleanup_stale_lock(git_dir: Path, log: Callable[[str], None]) -> None:
+    lock = git_dir / 'index.lock'
+    if not lock.exists():
+        return
+    age = time.time() - lock.stat().st_mtime
+    if age > 30.0:
+        lock.unlink()
+        log('Removed stale index.lock')
+
+
 def _git(args: list[str], git_dir: Path, work_tree: Path | None = None,
-         check: bool = True) -> subprocess.CompletedProcess:
+         check: bool = True, timeout: float = 30.0) -> subprocess.CompletedProcess:
     cmd = ['git', f'--git-dir={git_dir}']
     if work_tree is not None:
         cmd.append(f'--work-tree={work_tree}')
     cmd += args
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f'git {args[0]} timed out after {timeout}s (network drive down?)')
     if check and r.returncode != 0:
         raise RuntimeError(f'git {args[0]} failed:\n{r.stderr}')
     return r
+
+
+def _apply_perf_config(git_dir: Path, log: Callable[[str], None]) -> None:
+    """Set git config for large-repo performance.  Idempotent — safe to call on
+    every startup.  fsmonitor is only enabled on Git 2.37+."""
+    _git(['config', 'feature.manyFiles', 'true'], git_dir)
+    _git(['config', 'index.version', '4'], git_dir)
+    _git(['config', 'core.untrackedCache', 'true'], git_dir)
+    ver = git_version()
+    if ver >= (2, 37):
+        _git(['config', 'core.fsmonitor', 'true'], git_dir)
+        log('Performance: large-repo settings enabled (including fsmonitor)')
+    else:
+        log('Performance: large-repo settings enabled (fsmonitor skipped — Git '
+            + '.'.join(str(v) for v in ver) + ' < 2.37)')
 
 
 def _sync_git_exclude(shadow: Path, ignore: IgnoreFilter) -> None:
@@ -138,20 +180,34 @@ def _sync_git_exclude(shadow: Path, ignore: IgnoreFilter) -> None:
 def _init_shadow_repo(watch: Path, shadow: Path, ignore: IgnoreFilter,
                       log: Callable[[str], None]) -> None:
     git_dir = shadow / '.git'
+    _cleanup_stale_lock(git_dir, log)
     if git_dir.exists():
         _sync_git_exclude(shadow, ignore)
+        _apply_perf_config(git_dir, log)
+        _git(['add', '-A'], git_dir, watch)
+        r = _git(['status', '--porcelain'], git_dir, watch, check=False)
+        if r.stdout.strip():
+            lines = r.stdout.strip().splitlines()
+            log(f'Catching up {len(lines)} file(s) changed while offline...')
+            for line in lines:
+                log(f'  {line.strip()}')
+            ts = time.strftime('%Y-%m-%d %H:%M:%S')
+            _git(['commit', '-m', f'BaconSaver {ts} (catch-up)'], git_dir, watch)
+            log('Catch-up commit done.')
         return
 
     # Init inside the shadow directory — never touches the watched directory at all.
     # The watched dir may already have its own .git which we must not disturb.
     shadow.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(['git', 'init', str(shadow)], capture_output=True, text=True)
+    r = subprocess.run(['git', 'init', str(shadow)], capture_output=True, text=True, timeout=30.0)
     if r.returncode != 0:
         raise RuntimeError(f'git init failed:\n{r.stderr}')
 
     _git(['config', 'user.name', 'BaconSaver'], git_dir)
     _git(['config', 'user.email', 'baconsaver@local'], git_dir)
+    _git(['config', 'core.autocrlf', 'false'], git_dir)
     _git(['config', 'core.worktree', str(watch)], git_dir)
+    _apply_perf_config(git_dir, log)
     _sync_git_exclude(shadow, ignore)
 
     log(f'Initialized shadow repo: {git_dir}')
@@ -203,7 +259,7 @@ def get_file_at_commit(git_dir: Path, commit_hash: str, file_path: str) -> bytes
     """Return raw file content at a specific commit."""
     r = subprocess.run(
         ['git', f'--git-dir={git_dir}', 'show', f'{commit_hash}:{file_path}'],
-        capture_output=True
+        capture_output=True, timeout=30.0
     )
     if r.returncode != 0:
         raise RuntimeError(f'Could not retrieve {file_path} at {commit_hash}')
@@ -260,6 +316,7 @@ class _Handler(FileSystemEventHandler):
         self._pending: dict[str, str] = {}
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
+        self._committing = False
 
     def _schedule(self) -> None:
         if self._timer:
@@ -269,25 +326,36 @@ class _Handler(FileSystemEventHandler):
         self._timer.start()
 
     def _commit(self) -> None:
-        with self._lock:
-            pending = dict(self._pending)
-            self._pending.clear()
-
-        if not pending:
+        if self._committing:
+            self._schedule()
             return
-
+        self._committing = True
         try:
-            _git(['add', '-A'], self.git_dir, self.watch)
-            r = _git(['status', '--porcelain'], self.git_dir, self.watch, check=False)
-            if r.stdout.strip():
-                ts = time.strftime('%Y-%m-%d %H:%M:%S')
-                for line in r.stdout.strip().splitlines():
-                    self._log(f'  {line.strip()}')
-                _git(['commit', '-m', f'BaconSaver {ts}'], self.git_dir, self.watch)
-                n = len(r.stdout.strip().splitlines())
-                self._log(f'[{ts}] Committed {n} file(s).')
-        except RuntimeError as e:
-            self._log(str(e))
+            with self._lock:
+                pending = dict(self._pending)
+                self._pending.clear()
+
+            if not pending:
+                return
+
+            self._log(f'{len(pending)} change(s) pending, committing...')
+            try:
+                _cleanup_stale_lock(self.git_dir, self._log)
+                _git(['add', '-A'], self.git_dir, self.watch)
+                r = _git(['status', '--porcelain'], self.git_dir, self.watch, check=False)
+                if r.stdout.strip():
+                    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+                    for line in r.stdout.strip().splitlines():
+                        self._log(f'  {line.strip()}')
+                    _git(['commit', '-m', f'BaconSaver {ts}'], self.git_dir, self.watch)
+                    n = len(r.stdout.strip().splitlines())
+                    self._log(f'[{ts}] Committed {n} file(s).')
+                else:
+                    self._log('Nothing to commit (files may have been deleted)')
+            except RuntimeError as e:
+                self._log(f'Commit failed: {e}')
+        finally:
+            self._committing = False
 
     def _record(self, action: str, abs_path: str) -> None:
         p = Path(abs_path).resolve()
@@ -330,7 +398,7 @@ class WatchEngine:
 
     def __init__(self, watch_path: str,
                  log: Callable[[str], None] | None = None,
-                 shadows_base: Path = DEFAULT_SHADOWS_BASE,
+                 shadows_base: Path = None,  # required — set by caller
                  initial_patterns: list[str] | None = None) -> None:
         self.watch_path = Path(watch_path).resolve()
         self.shadow_path = (shadows_base / shadow_name(watch_path)).resolve()
@@ -400,6 +468,12 @@ class WatchEngine:
         self._observer.start()
         self._log(f'Resumed: {self.watch_path}')
 
+    def sync_exclude(self) -> None:
+        _sync_git_exclude(self.shadow_path, self.ignore)
+
+    def sync_exclude(self) -> None:
+        _sync_git_exclude(self.shadow_path, self.ignore)
+
     def stop(self) -> None:
         if not self._running:
             return
@@ -419,8 +493,9 @@ class WatchEngine:
 
 if __name__ == '__main__':
     path = 'd:/dev/baconsaver'
+    shadows_base = Path.home() / 'BaconSaverData' / 'shadows'
 
-    engine = WatchEngine(path)
+    engine = WatchEngine(path, shadows_base=shadows_base)
     engine.start()
     print(f'Shadow: {engine.shadow_path}')
     print('Press Ctrl+C to stop.')

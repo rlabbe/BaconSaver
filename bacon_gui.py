@@ -3,29 +3,39 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
-1 <= 0
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QAction
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QEvent
+from PyQt6.QtGui import QFont, QAction, QShortcut, QKeySequence, QTextCursor, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QPlainTextEdit, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QMessageBox, QDialog, QInputDialog,
     QLabel, QDialogButtonBox, QCheckBox, QTreeWidget, QTreeWidgetItem,
     QRadioButton, QButtonGroup, QHeaderView, QTextEdit, QFontDialog, QMenu,
+    QSystemTrayIcon,
 )
 
 from BaconSaver import (
-    WatchEngine, IgnoreFilter, IGNORE_PRESETS, ALWAYS_IGNORED, APP_DIR, DEFAULT_SHADOWS_BASE,
+    WatchEngine, IgnoreFilter, IGNORE_PRESETS, ALWAYS_IGNORED, APP_DIR,
     get_commit_log, get_commit_files, get_file_at_commit, get_full_tree_at_commit,
-    get_diff_for_commit, export_files, shadow_name,
+    get_diff_for_commit, export_files, shadow_name, git_version,
 )
 
 
 CONFIG_FILE = APP_DIR / 'config.json'
+LOG_DIR = APP_DIR / 'logs'
+
+
+def _file_log(msg: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = LOG_DIR / 'baconsaver.log'
+    line = f'{time.strftime("%Y-%m-%d %H:%M:%S")}  {msg}\n'
+    with open(path, 'a') as f:
+        f.write(line)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +408,8 @@ class RestoreDialog(QDialog):
             'QTextEdit { background-color: #1e1e1e; color: #cccccc; }'
         )
         right_layout.addWidget(self._preview)
+        goto_shortcut = QShortcut(QKeySequence('Ctrl+G'), self)
+        goto_shortcut.activated.connect(self._goto_line)
         splitter.addWidget(right)
 
         self._splitter = splitter
@@ -473,11 +485,18 @@ class RestoreDialog(QDialog):
         return raw
 
     def _load_commits(self):
-        self._commits = get_commit_log(self._git_dir, self._work_tree)
+        try:
+            self._commits = get_commit_log(self._git_dir, self._work_tree)
+        except Exception as e:
+            self._preview.setPlainText(f'Error loading commits: {e}')
+            return
         self._commit_list.clear()
         for c in self._commits:
             ts = self._format_timestamp(c['timestamp'])
-            changed = get_commit_files(self._git_dir, self._work_tree, c['hash'])
+            try:
+                changed = get_commit_files(self._git_dir, self._work_tree, c['hash'])
+            except Exception:
+                changed = []
             if len(changed) == 1:
                 detail = Path(changed[0]['path']).name
             else:
@@ -502,8 +521,16 @@ class RestoreDialog(QDialog):
         if not self._current_hash:
             return
 
+        try:
+            if self._mode_changed.isChecked():
+                files = get_commit_files(self._git_dir, self._work_tree, self._current_hash)
+            else:
+                files = [{'path': fp, 'status': ''} for fp in get_full_tree_at_commit(self._git_dir, self._current_hash)]
+        except Exception as e:
+            self._preview.setPlainText(f'Error loading files: {e}')
+            return
+
         if self._mode_changed.isChecked():
-            files = get_commit_files(self._git_dir, self._work_tree, self._current_hash)
             for f in files:
                 item = QTreeWidgetItem([f['path'], f['status']])
                 item.setCheckState(0, Qt.CheckState.Checked)
@@ -580,30 +607,54 @@ class RestoreDialog(QDialog):
         self._preview.setHtml(html)
 
     def _file_context_menu(self, pos):
-        item = self._file_tree.itemAt(pos)
-        if not item:
-            return
-        rel_path = item.data(0, Qt.ItemDataRole.UserRole)
-        if not rel_path:
-            return
-        full_path = Path(self._watch_path) / rel_path
+        try:
+            item = self._file_tree.itemAt(pos)
+            if not item:
+                return
+            rel_path = item.data(0, Qt.ItemDataRole.UserRole)
+            if not rel_path:
+                return
+            full_path = Path(self._watch_path) / rel_path
 
-        menu = QMenu(self)
+            menu = QMenu(self)
+            copy_action = menu.addAction('Copy Full Path')
+            explorer_action = menu.addAction('Open in Explorer')
+            code_action = menu.addAction('Open with Code')
 
-        copy_action = menu.addAction('Copy Full Path')
-        explorer_action = menu.addAction('Open in Explorer')
-        code_action = menu.addAction('Open with Code')
+            action = menu.exec_(self._file_tree.viewport().mapToGlobal(pos))
+            if action == copy_action:
+                QApplication.clipboard().setText(str(full_path))
+            elif action == explorer_action:
+                if full_path.exists():
+                    subprocess.Popen(['explorer', '/select,', str(full_path)])
+                else:
+                    subprocess.Popen(['explorer', str(full_path.parent)])
+            elif action == code_action:
+                subprocess.Popen(f'code "{full_path}"', shell=True)
+        except Exception:
+            pass
 
-        action = menu.exec_(self._file_tree.viewport().mapToGlobal(pos))
-        if action == copy_action:
-            QApplication.clipboard().setText(str(full_path))
-        elif action == explorer_action:
-            if full_path.exists():
-                subprocess.Popen(['explorer', '/select,', str(full_path)])
-            else:
-                subprocess.Popen(['explorer', str(full_path.parent)])
-        elif action == code_action:
-            subprocess.Popen(f'code "{full_path}"', shell=True)
+    def _goto_line(self):
+        try:
+            total = self._preview.document().blockCount()
+            if total <= 0:
+                return
+            line, ok = QInputDialog.getInt(self, 'Go to Line', f'Line (1–{total}):', 1, 1, total)
+            if ok:
+                block = self._preview.document().findBlockByLineNumber(line - 1)
+                if block.isValid():
+                    cursor = self._preview.textCursor()
+                    cursor.setPosition(block.position())
+                    cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                    self._preview.setTextCursor(cursor)
+                    self._preview.setFocus()
+                    # Scroll so the line is at the top
+                    self._preview.verticalScrollBar().setValue(
+                        self._preview.verticalScrollBar().value()
+                        + self._preview.cursorRect().top()
+                    )
+        except Exception:
+            pass
 
     def _on_file_clicked(self, item: QTreeWidgetItem, column: int):
         self._selected_file = item.data(0, Qt.ItemDataRole.UserRole)
@@ -616,22 +667,22 @@ class RestoreDialog(QDialog):
             self._preview.clear()
             return
 
-        status = getattr(self, '_selected_status', '')
-
-        if status == 'D':
-            self._preview.setPlainText(f'[File deleted in this snapshot]')
-            return
-
-        if self._view_diff.isChecked():
-            diff_text = get_diff_for_commit(self._git_dir, self._work_tree,
-                                            self._current_hash, fp)
-            if diff_text.strip():
-                self._show_diff_html(diff_text)
-            else:
-                self._preview.setPlainText('[No diff — file unchanged or binary]')
-            return
-
         try:
+            status = getattr(self, '_selected_status', '')
+
+            if status == 'D':
+                self._preview.setPlainText('[File deleted in this snapshot]')
+                return
+
+            if self._view_diff.isChecked():
+                diff_text = get_diff_for_commit(self._git_dir, self._work_tree,
+                                                self._current_hash, fp)
+                if diff_text.strip():
+                    self._show_diff_html(diff_text)
+                else:
+                    self._preview.setPlainText('[No diff — file unchanged or binary]')
+                return
+
             content = get_file_at_commit(self._git_dir, self._current_hash, fp)
             if self._is_binary(content):
                 self._preview.setPlainText(f'[Binary file — {len(content):,} bytes]')
@@ -645,41 +696,44 @@ class RestoreDialog(QDialog):
                 if self._tabs_as_spaces:
                     text = text.replace('\t', ' ' * self._tab_width)
                 self._preview.setPlainText(text)
-        except RuntimeError as e:
-            self._preview.setPlainText(str(e))
+        except Exception as e:
+            self._preview.setPlainText(f'Error: {e}')
 
     def _export(self):
-        if not self._current_hash:
-            return
-        checked = []
-        for i in range(self._file_tree.topLevelItemCount()):
-            item = self._file_tree.topLevelItem(i)
-            if item.checkState(0) == Qt.CheckState.Checked:
-                fp = item.data(0, Qt.ItemDataRole.UserRole)
-                if fp:
-                    checked.append(fp)
-        if not checked:
-            QMessageBox.information(self, 'Nothing Selected', 'No files are checked.')
-            return
+        try:
+            if not self._current_hash:
+                return
+            checked = []
+            for i in range(self._file_tree.topLevelItemCount()):
+                item = self._file_tree.topLevelItem(i)
+                if item.checkState(0) == Qt.CheckState.Checked:
+                    fp = item.data(0, Qt.ItemDataRole.UserRole)
+                    if fp:
+                        checked.append(fp)
+            if not checked:
+                QMessageBox.information(self, 'Nothing Selected', 'No files are checked.')
+                return
 
-        import time as _time
-        ts = _time.strftime('%Y%m%d_%H%M%S')
-        downloads = Path.home() / 'Downloads'
-        dest = downloads / f'BaconSaver_restore_{ts}'
+            import time as _time
+            ts = _time.strftime('%Y%m%d_%H%M%S')
+            downloads = Path.home() / 'Downloads'
+            dest = downloads / f'BaconSaver_restore_{ts}'
 
-        exported = export_files(self._git_dir, self._current_hash, checked, dest)
-        if exported:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Information)
-            msg.setWindowTitle('Export Complete')
-            msg.setText(f'Exported {len(exported)} file(s) to:\n{dest}')
-            msg.addButton(QMessageBox.StandardButton.Ok)
-            browse_btn = msg.addButton('Open Folder', QMessageBox.ButtonRole.ActionRole)
-            msg.exec()
-            if msg.clickedButton() == browse_btn:
-                os.startfile(str(dest))
-        else:
-            QMessageBox.warning(self, 'Export Failed', 'No files could be exported.')
+            exported = export_files(self._git_dir, self._current_hash, checked, dest)
+            if exported:
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Icon.Information)
+                msg.setWindowTitle('Export Complete')
+                msg.setText(f'Exported {len(exported)} file(s) to:\n{dest}')
+                msg.addButton(QMessageBox.StandardButton.Ok)
+                browse_btn = msg.addButton('Open Folder', QMessageBox.ButtonRole.ActionRole)
+                msg.exec()
+                if msg.clickedButton() == browse_btn:
+                    os.startfile(str(dest))
+            else:
+                QMessageBox.warning(self, 'Export Failed', 'No files could be exported.')
+        except Exception as e:
+            QMessageBox.warning(self, 'Export Error', str(e))
 
     def _pick_font(self):
         font, ok = QFontDialog.getFont(self._preview_font, self)
@@ -739,12 +793,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('BaconSaver')
-        self.setMinimumSize(800, 500)
+        self.setWindowIcon(QIcon(str(APP_DIR / 'bacon.svg')))
         self.resize(1000, 600)
 
         self._engines: dict[str, WatchEngine] = {}  # watch_path_str -> engine
         self._bridges: dict[str, _LogBridge] = {}
-        self._shadows_base: Path = DEFAULT_SHADOWS_BASE
+        self._shadows_base: Path | None = None
 
         # --- Central widget with splitter ---
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -780,11 +834,16 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(restore_btn)
         self._restore_btn = restore_btn
 
+        repo_btn = QPushButton('Set Repo Location...')
+        repo_btn.clicked.connect(self._set_repo_location)
+        left_layout.addWidget(repo_btn)
+
         splitter.addWidget(left)
 
         # Right panel: console
         self._console = QPlainTextEdit()
         self._console.setReadOnly(True)
+        self._console.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self._console.setFont(QFont('Consolas', 10))
         self._console.setStyleSheet(
             'QPlainTextEdit { background-color: #1e1e1e; color: #cccccc; }'
@@ -806,6 +865,26 @@ class MainWindow(QMainWindow):
         # Restore saved directories
         self._load_config()
 
+        _file_log('BaconSaver started')
+        if self._shadows_base is not None:
+            _file_log(f'Repo location: {self._shadows_base}')
+        for path in self._engines:
+            _file_log(f'Watching: {path}')
+
+        # System tray
+        self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(QIcon(str(APP_DIR / 'bacon.svg')))
+        self._tray.setToolTip('BaconSaver')
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction('Show')
+        show_action.triggered.connect(self._show_from_tray)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction('Quit')
+        quit_action.triggered.connect(self._quit_app)
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
     # --- Logging ---
 
     def _make_log_callback(self, label: str) -> tuple[_LogBridge, callable]:
@@ -815,10 +894,22 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, label: str, msg: str):
         self._console.appendPlainText(f'[{label}] {msg}')
+        _file_log(f'[{label}] {msg}')
 
     # --- Directory management ---
 
     def _add_directory(self):
+        if self._shadows_base is None:
+            reply = QMessageBox.question(
+                self, 'Repo Location Required',
+                'Set the repo location before adding directories.\n\n'
+                'Set it now?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._set_repo_location()
+            if self._shadows_base is None:
+                return
         dlg = AddDirectoryDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -829,7 +920,20 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Already Watching',
                                    f'{resolved} is already being watched.')
             return
+        ver = git_version()
+        if ver < (2, 37):
+            reply = QMessageBox.question(
+                self, 'Git Version Notice',
+                f'Git version {".".join(str(v) for v in ver)} detected.\n\n'
+                'File-system monitor (core.fsmonitor) requires Git 2.37 or newer.\n'
+                'Without it, git status may be slower on very large directories.\n\n'
+                'Proceed anyway?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self._start_engine(resolved, initial_patterns=dlg.get_patterns())
+        self._append_log('BaconSaver', f'Added: {resolved}')
         self._save_config()
 
     def _selected_item(self) -> QListWidgetItem | None:
@@ -852,6 +956,7 @@ class MainWindow(QMainWindow):
             return
         self._stop_engine(path)
         self._dir_list.takeItem(self._dir_list.row(item))
+        self._append_log('BaconSaver', f'Removed: {path}')
         self._save_config()
         self._update_status()
 
@@ -868,6 +973,7 @@ class MainWindow(QMainWindow):
         dlg = IgnoreDialog(engine.ignore, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             engine.ignore.set_patterns(dlg.get_patterns())
+            engine.sync_exclude()
             self._append_log(Path(path).name, 'Ignore patterns updated.')
 
     def _toggle_pause(self):
@@ -887,6 +993,8 @@ class MainWindow(QMainWindow):
         self._save_config()
 
     def _restore(self):
+        if self._shadows_base is None:
+            return
         item = self._selected_item()
         if not item:
             QMessageBox.information(self, 'No Selection', 'Select a directory first.')
@@ -899,6 +1007,31 @@ class MainWindow(QMainWindow):
             return
         dlg = RestoreDialog(path, shadow, self)
         dlg.exec()
+
+    def _set_repo_location(self):
+        current = str(self._shadows_base)
+        path = QFileDialog.getExistingDirectory(self, 'Select Repo Location', current)
+        if not path:
+            return
+        new_base = Path(path).resolve()
+        if new_base == self._shadows_base:
+            return
+        if self._engines:
+            reply = QMessageBox.question(
+                self, 'Repo Location Changed',
+                'Changing the repo location only affects newly added directories.\n'
+                'Existing watched directories keep their current repos.\n\n'
+                'Continue?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._shadows_base = new_base
+        self._save_config()
+        self._append_log('BaconSaver', f'Repo location set to: {new_base}')
+
+        if not self._engines:
+            self._status.showMessage(f'Repo location: {new_base}')
 
     # --- Engine lifecycle ---
 
@@ -928,7 +1061,8 @@ class MainWindow(QMainWindow):
     # --- Config persistence ---
 
     def _save_config(self):
-        self._shadows_base.mkdir(parents=True, exist_ok=True)
+        if self._shadows_base is not None:
+            self._shadows_base.mkdir(parents=True, exist_ok=True)
         try:
             data = json.loads(CONFIG_FILE.read_text())
         except Exception:
@@ -936,7 +1070,8 @@ class MainWindow(QMainWindow):
         entries = []
         for path, engine in self._engines.items():
             entries.append({'path': path, 'paused': engine.is_paused})
-        data['shadows_base'] = str(self._shadows_base)
+        if self._shadows_base is not None:
+            data['shadows_base'] = str(self._shadows_base)
         data['watched'] = entries
         CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
@@ -948,6 +1083,8 @@ class MainWindow(QMainWindow):
             sb = data.get('shadows_base')
             if sb:
                 self._shadows_base = Path(sb)
+            if self._shadows_base is None:
+                return
             for entry in data.get('watched', []):
                 # Support old format (plain string list) and new format (dict list)
                 if isinstance(entry, str):
@@ -980,13 +1117,57 @@ class MainWindow(QMainWindow):
         else:
             self._status.showMessage(f'Watching {n} directories')
 
-    # --- Cleanup ---
+    # --- First run ---
 
-    def closeEvent(self, event):
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not hasattr(self, '_first_run_checked'):
+            self._first_run_checked = True
+            if not CONFIG_FILE.exists():
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(100, self._first_run_setup)
+
+    def _first_run_setup(self):
+        reply = QMessageBox.question(
+            self, 'Welcome to BaconSaver',
+            'No configuration found.\n\n'
+            'Choose a location for the backup repository.\n'
+            'This is where file history (git repos) will be stored.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._set_repo_location()
+
+    # --- Tray ---
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._show_from_tray()
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _quit_app(self):
+        _file_log('BaconSaver shutting down')
+        self._tray.hide()
         self._save_config()
         for path in list(self._engines):
             self._stop_engine(path)
-        event.accept()
+        QApplication.quit()
+
+    # --- Cleanup ---
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            self.hide()
+            event.ignore()
+            return
+        super().changeEvent(event)
+
+    def closeEvent(self, event):
+        self._quit_app()
 
 
 # ---------------------------------------------------------------------------
@@ -994,6 +1175,27 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
+    import msvcrt
+    lock_path = APP_DIR / '.lock'
+    try:
+        lock_file = open(lock_path, 'w')
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        # Lock held by another process — already running
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        _app = QApplication(sys.argv)
+        QMessageBox.warning(None, 'BaconSaver', 'BaconSaver is already running.')
+        sys.exit(1)
+
+    import atexit
+    def _cleanup_lock():
+        try:
+            lock_file.close()
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    atexit.register(_cleanup_lock)
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     window = MainWindow()
