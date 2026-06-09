@@ -1,2 +1,5 @@
 logs/
 config.json
+x64/
+.vs/
+*.user

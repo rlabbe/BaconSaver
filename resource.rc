@@ -1,0 +1,10 @@
+#include <windows.h>
+
+// Common Controls v6 (modern ListView / TreeView / theming) + DPI awareness.
+// app.manifest is merged into the linker-generated manifest via the project's
+// <Manifest> item, so it is intentionally NOT embedded here (avoids a duplicate).
+
+// Application icon. To enable: convert bacon.svg to bacon.ico, place it beside
+// this file, and uncomment the next line. The app falls back to a stock icon
+// if no resource is present.
+// 101 ICON "bacon.ico"
