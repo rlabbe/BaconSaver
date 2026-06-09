@@ -100,7 +100,8 @@ struct git_result {
 
 // Run "git <args>" capturing raw stdout/stderr bytes. Never injects --git-dir;
 // callers pass whatever flags they need. Throws only if the process cannot start.
-git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, const wchar_t* cwd = nullptr) {
+git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, const wchar_t* cwd = nullptr,
+                    HANDLE cancel_event = nullptr) {
     std::wstring cmd = L"git";
     for (auto& a : args) {
         cmd += L' ';
@@ -144,8 +145,24 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, cons
     CloseHandle(out_r);
     CloseHandle(err_r);
 
-    WaitForSingleObject(pi.hProcess, timeout_ms > 0 ? timeout_ms : INFINITE);
-    GetExitCodeProcess(pi.hProcess, &r.code);
+    if (cancel_event) {
+        HANDLE handles[2] = { pi.hProcess, cancel_event };
+        DWORD which = WaitForMultipleObjects(2, handles, FALSE, timeout_ms > 0 ? timeout_ms : INFINITE);
+        if (which == WAIT_OBJECT_0 + 1) {
+            TerminateProcess(pi.hProcess, 1);
+            r.code = 1;
+            r.err = "cancelled";
+        } else if (which == WAIT_OBJECT_0) {
+            GetExitCodeProcess(pi.hProcess, &r.code);
+        } else {
+            TerminateProcess(pi.hProcess, 1);
+            r.code = 1;
+            r.err = "timeout or error";
+        }
+    } else {
+        WaitForSingleObject(pi.hProcess, timeout_ms > 0 ? timeout_ms : INFINITE);
+        GetExitCodeProcess(pi.hProcess, &r.code);
+    }
     CloseHandle(pi.hProcess);
     return r;
 }
@@ -338,8 +355,10 @@ std::string watch_engine::git(const std::vector<std::string>& args, bool check, 
     full.push_back("--git-dir=" + path_utf8(fs::path(shadow_path_) / ".git"));
     full.push_back("--work-tree=" + path_utf8(watch_path_));
     full.insert(full.end(), args.begin(), args.end());
-    auto r = git_exec(full, timeout_ms);
+    auto r = git_exec(full, timeout_ms, nullptr, stop_event_);
     if (check && r.code != 0) {
+        if (r.err == "cancelled")
+            throw std::runtime_error("git cancelled");
         std::string verb = args.empty() ? "" : args[0];
         throw std::runtime_error("git " + verb + " failed:\n" + r.err);
     }
@@ -532,11 +551,23 @@ void watch_engine::init_shadow_repo() {
     fs::path git_dir = shadow / ".git";
     cleanup_stale_lock(git_dir, log_);
 
+    auto cancelled = [&] { return WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0; };
+
     if (fs::exists(git_dir)) {
+        // Verify repo integrity
+        {
+            auto r = git_exec({ "--git-dir=" + path_utf8(git_dir), "fsck", "--no-dangling", "--no-progress" }, 60000);
+            if (r.code != 0)
+                log_("WARNING: git fsck found issues: " + trim(r.err));
+        }
         discover_nested_repos();
         sync_exclude();
         apply_perf_config();
+        if (cancelled())
+            return;
         git({ "add", "-A" });
+        if (cancelled())
+            return;
         absorb_new_gitlinks();
         stage_all_nested_repos();
         if (skip_binary_)
@@ -544,6 +575,8 @@ void watch_engine::init_shadow_repo() {
         std::string staged = git({ "diff", "--cached", "--name-status" }, false);
         if (!trim(staged).empty()) {
             auto lines = split_lines(trim(staged));
+            if (cancelled())
+                return;
             log_("Catching up " + std::to_string(lines.size()) + " file(s)...");
             git({ "commit", "-m", "BaconSaver " + now_ts() + " (catch-up)" });
             log_("Catch-up commit done.");
@@ -556,6 +589,8 @@ void watch_engine::init_shadow_repo() {
     auto init = git_exec({ "init", path_utf8(shadow) }, 30000);
     if (init.code != 0)
         throw std::runtime_error("git init failed:\n" + init.err);
+    if (cancelled())
+        return;
 
     git({ "config", "user.name", "BaconSaver" });
     git({ "config", "user.email", "baconsaver@local" });
@@ -564,16 +599,22 @@ void watch_engine::init_shadow_repo() {
     apply_perf_config();
     discover_nested_repos();
     sync_exclude();
+    if (cancelled())
+        return;
 
     log_("Initialized shadow repo: " + path_utf8(git_dir));
     log_("Taking initial snapshot...");
     git({ "add", "-A" });
+    if (cancelled())
+        return;
     absorb_new_gitlinks();
     stage_all_nested_repos();
     if (skip_binary_)
         unstage_binaries();
     std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (!trim(staged).empty()) {
+        if (cancelled())
+            return;
         git({ "commit", "-m", "BaconSaver: initial snapshot" });
         log_("Initial snapshot committed.");
     } else {
@@ -585,6 +626,9 @@ void watch_engine::commit() {
     fs::path git_dir = fs::path(shadow_path_) / ".git";
     cleanup_stale_lock(git_dir, log_);
 
+    if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0)
+        return;
+
     std::vector<std::string> pending(pending_.begin(), pending_.end());
     pending_.clear();
     bool overflow = overflow_;
@@ -592,6 +636,8 @@ void watch_engine::commit() {
 
     discover_nested_repos();
     sync_exclude();
+    if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0)
+        return;
     git({ "add", "-A" });
     absorb_new_gitlinks();
     if (skip_binary_)
@@ -624,6 +670,8 @@ void watch_engine::commit() {
 
     std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (trim(staged).empty())
+        return;
+    if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0)
         return;
     auto lines = split_lines(trim(staged));
     for (auto& line : lines)

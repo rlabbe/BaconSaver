@@ -47,6 +47,7 @@ struct entry {
     std::wstring path;
     std::unique_ptr<watch_engine> engine;
     bool paused = false;
+    bool skip_binary = false;
 };
 
 // Globals (single-window app)
@@ -85,11 +86,29 @@ void file_log(const std::string& msg) {
     f << now_ts() << "  " << msg << "\n";
 }
 
+void console_update_scroll() {
+    int lines = (int)SendMessageW(g_console, EM_GETLINECOUNT, 0, 0);
+    RECT rc;
+    GetClientRect(g_console, &rc);
+    HDC dc = GetDC(g_console);
+    HFONT f = (HFONT)SendMessageW(g_console, WM_GETFONT, 0, 0);
+    TEXTMETRICW tm = {};
+    if (dc && f) {
+        SelectObject(dc, f);
+        GetTextMetricsW(dc, &tm);
+    }
+    if (dc)
+        ReleaseDC(g_console, dc);
+    int visible = rc.bottom / (tm.tmHeight > 0 ? tm.tmHeight : 16);
+    ShowScrollBar(g_console, SB_VERT, lines > visible);
+}
+
 void console_append(const std::wstring& line) {
     int len = GetWindowTextLengthW(g_console);
     SendMessageW(g_console, EM_SETSEL, len, len);
     std::wstring l = line + L"\r\n";
     SendMessageW(g_console, EM_REPLACESEL, FALSE, (LPARAM)l.c_str());
+    console_update_scroll();
 }
 
 void log_local(const std::string& msg) {
@@ -145,6 +164,7 @@ void list_set_text(int idx, const std::wstring& text) {
 void start_engine(const std::wstring& path, const std::vector<std::string>& patterns, bool skip_binary = false) {
     auto e = std::make_unique<entry>();
     e->path = path;
+    e->skip_binary = skip_binary;
     e->engine = std::make_unique<watch_engine>(path, g_shadows_base, make_log(path), patterns, skip_binary);
     e->engine->start();
     SendMessageW(g_list, LB_ADDSTRING, 0, (LPARAM)path.c_str());
@@ -165,6 +185,8 @@ void save_config() {
         json::value o = json::value::make_object();
         o.set("path", json::value(to_utf8(e->path)));
         o.set("paused", json::value(e->paused));
+        if (e->skip_binary)
+            o.set("skip_binary", json::value(true));
         arr.arr->push_back(o);
     }
     if (g_have_base)
@@ -221,6 +243,7 @@ void load_config() {
             for (auto& item : *w->arr) {
                 std::wstring path;
                 bool paused = false;
+                bool skip_binary = false;
                 if (item.is_string()) {
                     path = to_wide(item.str);
                 } else {
@@ -228,13 +251,15 @@ void load_config() {
                         path = to_wide(p->as_string());
                     if (auto* pa = item.find("paused"))
                         paused = pa->as_bool();
+                    if (auto* sb = item.find("skip_binary"))
+                        skip_binary = sb->as_bool();
                 }
                 if (path.empty())
                     continue;
                 std::error_code ec;
                 if (!fs::is_directory(path, ec))
                     continue;
-                start_engine(path, {});
+                start_engine(path, {}, skip_binary);
                 if (paused) {
                     auto& e = g_entries.back();
                     e->engine->pause();
@@ -325,6 +350,24 @@ void add_directory() {
             return;
         }
     }
+    // Prevent watching inside the repo location or vice versa
+    {
+        std::error_code ec;
+        fs::path wp = fs::absolute(fs::path(path), ec);
+        fs::path rp = fs::absolute(fs::path(g_shadows_base), ec);
+        auto inside = [&](const fs::path& a, const fs::path& b) -> bool {
+            auto rel = fs::relative(a, b, ec);
+            if (ec)
+                return false;
+            auto s = rel.wstring();
+            return s == L"." || s.size() < 2 || s[0] != L'.' || s[1] != L'.';
+        };
+        if (!ec && (inside(wp, rp) || inside(rp, wp))) {
+            MessageBoxW(g_main, L"The watched directory cannot be the same as (or inside) the backup repo location.",
+                        L"Invalid Directory", MB_ICONWARNING);
+            return;
+        }
+    }
     auto [maj, min, pat] = git_version();
     if (maj < 2 || (maj == 2 && min < 37)) {
         std::wstring msg = L"Git version " + std::to_wstring(maj) + L"." + std::to_wstring(min) +
@@ -365,6 +408,8 @@ void remove_directory() {
 
 void toggle_pause() {
     int idx = selected_index();
+    if (idx < 0 && g_entries.size() == 1)
+        idx = 0;
     if (idx < 0)
         return;
     auto& e = g_entries[idx];
@@ -382,6 +427,8 @@ void toggle_pause() {
 
 void edit_ignores() {
     int idx = selected_index();
+    if (idx < 0 && g_entries.size() == 1)
+        idx = 0;
     if (idx < 0) {
         MessageBoxW(g_main, L"Select a directory first.", L"No Selection", MB_ICONINFORMATION);
         return;
@@ -459,6 +506,7 @@ void quit_app(HWND) {
 // ---------------------------------------------------------------------------
 
 void layout(HWND hwnd) {
+    SendMessageW(hwnd, WM_SETREDRAW, FALSE, 0);
     RECT rc;
     GetClientRect(hwnd, &rc);
     int W = rc.right, H = rc.bottom;
@@ -488,6 +536,9 @@ void layout(HWND hwnd) {
     int cx = margin + left_w + splitter_w + margin;
     MoveWindow(g_console, cx, margin, W - cx - margin, H - status_h - margin * 2, TRUE);
     MoveWindow(g_status, 0, H - status_h, W, status_h, TRUE);
+    console_update_scroll();
+    SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
 }
 
 LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -520,7 +571,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         g_console = CreateWindowExW(
             0, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 0, 0, 10,
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10,
             10, hwnd, nullptr, hi, nullptr);
         SendMessageW(g_console, EM_SETLIMITTEXT, 0, 0);
 

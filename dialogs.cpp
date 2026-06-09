@@ -1146,6 +1146,7 @@ void restore_save_size(HWND hwnd) {
 }
 
 void restore_layout(HWND hwnd, restore_state* st) {
+    SendMessageW(hwnd, WM_SETREDRAW, FALSE, 0);
     RECT rc;
     GetClientRect(hwnd, &rc);
     int W = rc.right, H = rc.bottom;
@@ -1189,6 +1190,8 @@ void restore_layout(HWND hwnd, restore_state* st) {
     MoveWindow(st->count_lbl, margin, by + 6, 160, 20, TRUE);
     MoveWindow(GetDlgItem(hwnd, IDCANCEL), W - margin - 90, by, 90, 28, TRUE);
     MoveWindow(st->export_btn, W - margin - 90 - 130, by, 124, 28, TRUE);
+    SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
 }
 
 void restore_goto_line(HWND hwnd, restore_state* st) {
