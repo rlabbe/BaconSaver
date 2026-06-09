@@ -513,32 +513,34 @@ void layout(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     int W = rc.right, H = rc.bottom;
-    int margin = 8;
-    int status_h = 22;
-    int left_w = g_splitter_x;
-    int splitter_w = 6;
-    int body_top = margin + 18; // below the "Watched Directories" label
-    int body_h = H - status_h - body_top - margin;
+    int m = scale_px(8, hwnd);
+    int sh = scale_px(22, hwnd);
+    int lbl_h = scale_px(18, hwnd);
+    int splitter_w = scale_px(6, hwnd);
+    int btn_h = scale_px(28, hwnd);
+    int btn_gap = scale_px(4, hwnd);
+    int left_w = scale_px(g_splitter_x, hwnd);
+    int body_top = m + lbl_h;
+    int body_h = H - sh - body_top - m;
 
-    const int btn_h = 28, btn_gap = 4;
     int btn_area = 7 * (btn_h + btn_gap);
     int list_h = body_h - btn_area - btn_gap;
-    if (list_h < 60)
-        list_h = 60;
+    if (list_h < scale_px(60, hwnd))
+        list_h = scale_px(60, hwnd);
 
-    MoveWindow(GetDlgItem(hwnd, 900), margin, margin, left_w, 18, TRUE); // label
-    MoveWindow(g_list, margin, body_top, left_w, list_h, TRUE);
+    MoveWindow(GetDlgItem(hwnd, 900), m, m, left_w, lbl_h, TRUE);
+    MoveWindow(g_list, m, body_top, left_w, list_h, TRUE);
 
     int by = body_top + list_h + btn_gap;
     int ids[7] = { ID_ADD, ID_REMOVE, ID_PAUSE, ID_IGNORES, ID_RESTORE, ID_REPO, ID_CONFIG };
     for (int i = 0; i < 7; ++i) {
-        MoveWindow(GetDlgItem(hwnd, ids[i]), margin, by, left_w, btn_h, TRUE);
+        MoveWindow(GetDlgItem(hwnd, ids[i]), m, by, left_w, btn_h, TRUE);
         by += btn_h + btn_gap;
     }
 
-    int cx = margin + left_w + splitter_w + margin;
-    MoveWindow(g_console, cx, margin, W - cx - margin, H - status_h - margin * 2, TRUE);
-    MoveWindow(g_status, 0, H - status_h, W, status_h, TRUE);
+    int cx = m + left_w + splitter_w + m;
+    MoveWindow(g_console, cx, m, W - cx - m, H - sh - m * 2, TRUE);
+    MoveWindow(g_status, 0, H - sh, W, sh, TRUE);
     console_update_scroll();
     SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
@@ -584,15 +586,17 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             nullptr);
 
         // Fonts
-        HFONT gui = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT gui = CreateFontW(
+            -MulDiv(11, dpi_for(hwnd), 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FF_DONTCARE, L"MS Shell Dlg 2");
         SendMessageW(GetDlgItem(hwnd, 900), WM_SETFONT, (WPARAM)gui, TRUE);
         SendMessageW(g_list, WM_SETFONT, (WPARAM)gui, TRUE);
         SendMessageW(g_status, WM_SETFONT, (WPARAM)gui, TRUE);
         for (auto& b : btns)
             SendMessageW(GetDlgItem(hwnd, b.id), WM_SETFONT, (WPARAM)gui, TRUE);
         g_mono_font = CreateFontW(
-            -15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-            FIXED_PITCH | FF_MODERN, L"Consolas");
+            -scale_px(15, hwnd), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
         SendMessageW(g_console, WM_SETFONT, (WPARAM)g_mono_font, TRUE);
 
         tray_add(hwnd);
@@ -608,11 +612,15 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SETCURSOR: {
         RECT rc;
         GetClientRect(hwnd, &rc);
-        int gutter_x = 8 + g_splitter_x;
-        int gutter_w = 6;
-        int body_top = 8 + 18;
-        int body_h = rc.bottom - 22 - body_top - 8;
-        RECT gutter = { gutter_x, body_top, gutter_x + gutter_w, body_top + body_h };
+        int m = scale_px(8, hwnd);
+        int sh = scale_px(22, hwnd);
+        int lbl_h = scale_px(18, hwnd);
+        int splitter_w = scale_px(6, hwnd);
+        int left_w = scale_px(g_splitter_x, hwnd);
+        int gutter_x = m + left_w;
+        int body_top = m + lbl_h;
+        int body_h = rc.bottom - sh - body_top - m;
+        RECT gutter = { gutter_x, body_top, gutter_x + splitter_w, body_top + body_h };
         POINT pt;
         GetCursorPos(&pt);
         ScreenToClient(hwnd, &pt);
@@ -624,11 +632,15 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         RECT rc;
         GetClientRect(hwnd, &rc);
-        int gutter_x = 8 + g_splitter_x;
-        int gutter_w = 6;
-        int body_top = 8 + 18;
-        int body_h = rc.bottom - 22 - body_top - 8;
-        RECT gutter = { gutter_x, body_top, gutter_x + gutter_w, body_top + body_h };
+        int m = scale_px(8, hwnd);
+        int sh = scale_px(22, hwnd);
+        int lbl_h = scale_px(18, hwnd);
+        int splitter_w = scale_px(6, hwnd);
+        int left_w = scale_px(g_splitter_x, hwnd);
+        int gutter_x = m + left_w;
+        int body_top = m + lbl_h;
+        int body_h = rc.bottom - sh - body_top - m;
+        RECT gutter = { gutter_x, body_top, gutter_x + splitter_w, body_top + body_h };
         POINT pt = { LOWORD(lp), HIWORD(lp) };
         if (PtInRect(&gutter, pt)) {
             g_dragging = true;
@@ -640,13 +652,16 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_dragging) {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            int x = LOWORD(lp) - 3;
-            if (x < 80)
-                x = 80;
-            if (x > rc.right - 280)
-                x = rc.right - 280;
-            if (x != g_splitter_x) {
-                g_splitter_x = x;
+            int x = LOWORD(lp) - scale_px(3, hwnd);
+            int min_x = scale_px(80, hwnd);
+            int max_x = rc.right - scale_px(280, hwnd);
+            if (x < min_x)
+                x = min_x;
+            if (x > max_x)
+                x = max_x;
+            int logical = MulDiv(x, 96, dpi_for(hwnd));
+            if (logical != g_splitter_x) {
+                g_splitter_x = logical;
                 layout(hwnd);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }

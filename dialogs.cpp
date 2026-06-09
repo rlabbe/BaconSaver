@@ -57,6 +57,7 @@ enum {
     IDC_RES_PREVIEW = 510,
     IDC_RES_COUNT_LBL = 511,
     IDC_RES_EXPORT = 512,
+    IDC_RES_FILTER = 513,
 };
 } // anonymous namespace
 #pragma comment(lib, "shlwapi.lib")
@@ -110,8 +111,11 @@ bool fnmatch(const std::string& pattern, const std::string& str) {
     return pi == pattern.size();
 }
 
-HFONT ui_font() {
-    return (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+HFONT ui_font(HWND hwnd) {
+    int dpi = dpi_for(hwnd);
+    return CreateFontW(
+        -MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY, FF_DONTCARE, L"MS Shell Dlg 2");
 }
 
 void set_font(HWND h, HFONT f) {
@@ -122,7 +126,7 @@ HWND make(LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, int w, int h, HW
     HWND c = CreateWindowExW(
         0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr),
         nullptr);
-    set_font(c, ui_font());
+    set_font(c, ui_font(parent));
     return c;
 }
 
@@ -853,6 +857,9 @@ struct restore_state {
     HWND count_lbl = nullptr;
     HWND export_btn = nullptr;
     HWND sel_all_cb = nullptr;
+    HWND filter_edit = nullptr;
+
+    std::vector<std::string> full_files;
 
     int splitter1_x = 240;
     int splitter2_x = 600;
@@ -940,6 +947,70 @@ void restore_refresh_preview(restore_state* st) {
     }
 }
 
+static std::string to_lower(std::string s) {
+    for (auto& c : s)
+        c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+void restore_apply_filter(restore_state* st) {
+    wchar_t buf[256];
+    GetWindowTextW(st->filter_edit, buf, 256);
+    std::string filter = to_lower(trim(to_utf8(buf)));
+
+    ListView_DeleteAllItems(st->files_lv);
+    rich_clear(st->preview);
+    st->selected_file.clear();
+    SendMessageW(st->sel_all_cb, BM_SETCHECK, BST_UNCHECKED, 0);
+
+    if (st->full_files.empty())
+        return;
+
+    // Split into space-separated terms
+    std::vector<std::string> terms;
+    std::istringstream ss(filter);
+    std::string term;
+    while (ss >> term)
+        terms.push_back(term);
+
+    int n = 0;
+    for (auto& f : st->full_files) {
+        std::string lower = to_lower(f);
+        bool match = true;
+        for (auto& t : terms) {
+            // Try wildcard match first, then substring match
+            if (!fnmatch(t, lower) && lower.find(t) == std::string::npos &&
+                to_lower(fs::path(to_wide(f)).filename().string()).find(t) == std::string::npos) {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+            continue;
+
+        LVITEMW it = {};
+        it.mask = LVIF_TEXT;
+        it.iItem = n;
+        std::wstring path = to_wide(f);
+        it.pszText = path.data();
+        ListView_InsertItem(st->files_lv, &it);
+        ListView_SetCheckState(st->files_lv, n, TRUE);
+        ++n;
+    }
+
+    SetWindowTextW(st->count_lbl, (std::to_wstring(n) + L" file(s)").c_str());
+    EnableWindow(st->export_btn, n > 0);
+    SendMessageW(st->sel_all_cb, BM_SETCHECK, n > 0 ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    if (n == 1) {
+        wchar_t fbuf[1024];
+        ListView_GetItemText(st->files_lv, 0, 0, fbuf, 1024);
+        st->selected_file = to_utf8(fbuf);
+        ListView_SetItemState(st->files_lv, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        restore_refresh_preview(st);
+    }
+}
+
 void restore_refresh_files(restore_state* st) {
     ListView_DeleteAllItems(st->files_lv);
     rich_clear(st->preview);
@@ -948,51 +1019,21 @@ void restore_refresh_files(restore_state* st) {
         return;
 
     bool changed = SendMessageW(st->mode_changed, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    int n = 0;
+    st->full_files.clear();
     try {
         if (changed) {
             auto files = get_commit_files(st->git_dir, st->work_tree, st->current_hash);
-            for (auto& f : files) {
-                LVITEMW it = {};
-                it.mask = LVIF_TEXT;
-                it.iItem = n;
-                std::wstring path = to_wide(f.status + "  " + f.path);
-                it.pszText = path.data();
-                ListView_InsertItem(st->files_lv, &it);
-                ListView_SetCheckState(st->files_lv, n, TRUE);
-                ++n;
-            }
+            for (auto& f : files)
+                st->full_files.push_back(f.path);
         } else {
-            auto files = get_full_tree_at_commit(st->git_dir, st->current_hash);
-            for (auto& fp : files) {
-                LVITEMW it = {};
-                it.mask = LVIF_TEXT;
-                it.iItem = n;
-                std::wstring path = to_wide(fp);
-                it.pszText = path.data();
-                ListView_InsertItem(st->files_lv, &it);
-                ListView_SetCheckState(st->files_lv, n, TRUE);
-                ++n;
-            }
+            st->full_files = get_full_tree_at_commit(st->git_dir, st->current_hash);
         }
     } catch (const std::exception& e) {
         set_preview_plain(st->preview, L"Error loading files: " + to_wide(e.what()));
         return;
     }
-
-    SetWindowTextW(st->count_lbl, (std::to_wstring(n) + L" file(s)").c_str());
-    EnableWindow(st->export_btn, n > 0);
-    SendMessageW(st->sel_all_cb, BM_SETCHECK, n > 0 ? BST_CHECKED : BST_UNCHECKED, 0);
-
-    if (n == 1) {
-        wchar_t buf[1024];
-        ListView_GetItemText(st->files_lv, 0, 0, buf, 1024);
-        st->selected_file = to_utf8(buf);
-        if (st->selected_file.size() > 3 && st->selected_file[1] == ' ')
-            st->selected_file = st->selected_file.substr(3);
-        ListView_SetItemState(st->files_lv, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        restore_refresh_preview(st);
-    }
+    SetWindowTextW(st->filter_edit, L"");
+    restore_apply_filter(st);
 }
 
 void restore_load_commits(restore_state* st) {
@@ -1144,44 +1185,48 @@ void restore_layout(HWND hwnd, restore_state* st) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     int W = rc.right, H = rc.bottom;
-    int margin = 8;
-    int splitter_w = 6;
-    int bottom_h = 36;
-    int top = margin;
-    int body_h = H - bottom_h - margin * 2;
+    int m = scale_px(8, hwnd);
+    int splitter_w = scale_px(6, hwnd);
+    int bottom_h = scale_px(36, hwnd);
+    int top = m;
+    int body_h = H - bottom_h - m * 2;
+    int lbl_h = scale_px(18, hwnd);
 
-    int left_w = st->splitter1_x;
-    int mid_w = st->splitter2_x - (margin + left_w + splitter_w + margin);
-    int right_x = margin + left_w + splitter_w + margin + mid_w + splitter_w + margin;
-    int right_w = W - right_x - margin;
-    if (right_w < 120)
-        right_w = 120;
+    int left_w = scale_px(st->splitter1_x, hwnd);
+    int mid_w = scale_px(st->splitter2_x, hwnd) - (m + left_w + splitter_w + m);
+    int right_x = m + left_w + splitter_w + m + mid_w + splitter_w + m;
+    int right_w = W - right_x - m;
+    if (right_w < scale_px(120, hwnd))
+        right_w = scale_px(120, hwnd);
 
     // left: label + commits
     HWND lbl_snap = GetDlgItem(hwnd, IDC_RES_SNAP_LBL);
     if (lbl_snap)
-        MoveWindow(lbl_snap, margin, top, left_w, 18, TRUE);
-    MoveWindow(st->commits_lb, margin, top + 22, left_w, body_h - 22, TRUE);
+        MoveWindow(lbl_snap, m, top, left_w, lbl_h, TRUE);
+    MoveWindow(st->commits_lb, m, top + scale_px(22, hwnd), left_w, body_h - scale_px(22, hwnd), TRUE);
 
     // mid: mode row + checkbox + list
-    int mx = margin + left_w + splitter_w + margin;
-    MoveWindow(st->mode_changed, mx, top, 110, 22, TRUE);
-    MoveWindow(st->mode_all, mx + 112, top, 110, 22, TRUE);
-    MoveWindow(st->sel_all_cb, mx, top + 26, 160, 16, TRUE);
-    MoveWindow(st->files_lv, mx, top + 44, mid_w, body_h - 44, TRUE);
-    ListView_SetColumnWidth(st->files_lv, 0, mid_w - 24);
+    int mx = m + left_w + splitter_w + m;
+    MoveWindow(st->mode_changed, mx, top, scale_px(110, hwnd), scale_px(22, hwnd), TRUE);
+    MoveWindow(st->mode_all, mx + scale_px(112, hwnd), top, scale_px(110, hwnd), scale_px(22, hwnd), TRUE);
+    MoveWindow(st->sel_all_cb, mx, top + scale_px(26, hwnd), scale_px(160, hwnd), scale_px(16, hwnd), TRUE);
+    MoveWindow(st->filter_edit, mx, top + scale_px(44, hwnd), mid_w, scale_px(20, hwnd), TRUE);
+    MoveWindow(st->files_lv, mx, top + scale_px(68, hwnd), mid_w, body_h - scale_px(68, hwnd), TRUE);
+    ListView_SetColumnWidth(st->files_lv, 0, mid_w - scale_px(24, hwnd));
 
     // right: view row + font + preview
-    MoveWindow(st->view_content, right_x, top, 80, 22, TRUE);
-    MoveWindow(st->view_diff, right_x + 84, top, 80, 22, TRUE);
-    MoveWindow(GetDlgItem(hwnd, IDC_RES_FONT), right_x + right_w - 80, top, 80, 24, TRUE);
-    MoveWindow(st->preview, right_x, top + 28, right_w, body_h - 28, TRUE);
+    MoveWindow(st->view_content, right_x, top, scale_px(80, hwnd), scale_px(22, hwnd), TRUE);
+    MoveWindow(st->view_diff, right_x + scale_px(84, hwnd), top, scale_px(80, hwnd), scale_px(22, hwnd), TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDC_RES_FONT), right_x + right_w - scale_px(80, hwnd), top, scale_px(80, hwnd),
+               scale_px(24, hwnd), TRUE);
+    MoveWindow(st->preview, right_x, top + scale_px(28, hwnd), right_w, body_h - scale_px(28, hwnd), TRUE);
 
     // bottom
     int by = H - bottom_h;
-    MoveWindow(st->count_lbl, margin, by + 6, 160, 20, TRUE);
-    MoveWindow(GetDlgItem(hwnd, IDCANCEL), W - margin - 90, by, 90, 28, TRUE);
-    MoveWindow(st->export_btn, W - margin - 90 - 130, by, 124, 28, TRUE);
+    MoveWindow(st->count_lbl, m, by + scale_px(6, hwnd), scale_px(160, hwnd), scale_px(20, hwnd), TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDCANCEL), W - m - scale_px(90, hwnd), by, scale_px(90, hwnd), scale_px(28, hwnd), TRUE);
+    MoveWindow(st->export_btn, W - m - scale_px(90, hwnd) - scale_px(130, hwnd), by, scale_px(124, hwnd),
+               scale_px(28, hwnd), TRUE);
     SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
 }
@@ -1226,10 +1271,14 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         st->sel_all_cb = make(
             L"BUTTON", L"Select / Deselect All", WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 10, 10, hwnd, IDC_RES_SEL_ALL);
 
+        st->filter_edit = make(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd, IDC_RES_FILTER);
+        SendMessageW(st->filter_edit, EM_SETCUEBANNER, FALSE,
+                     (LPARAM)L"Filter files  * ? [ ]  space = AND");
+
         st->files_lv = CreateWindowExW(
             0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
             0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_RES_FILES, GetModuleHandleW(nullptr), nullptr);
-        set_font(st->files_lv, ui_font());
+        set_font(st->files_lv, ui_font(hwnd));
         ListView_SetExtendedListViewStyle(st->files_lv, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
         {
             LVCOLUMNW col = {};
@@ -1273,15 +1322,14 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (st) {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            int margin = 8;
-            int gutter_w = 6;
-            int top = margin;
-            int body_h = rc.bottom - 36 - margin * 2;
-            int spl_y = top + 22, spl_h = body_h - 22;
-            RECT g1 = { margin + st->splitter1_x, spl_y, margin + st->splitter1_x + gutter_w, spl_y + spl_h };
-            int mid_left = margin + st->splitter1_x + gutter_w + margin;
-            RECT g2 = { mid_left + (st->splitter2_x - mid_left), spl_y,
-                        mid_left + (st->splitter2_x - mid_left) + gutter_w, spl_y + spl_h };
+            int m = scale_px(8, hwnd);
+            int splitter_w = scale_px(6, hwnd);
+            int spl_y = m + scale_px(22, hwnd);
+            int spl_h = rc.bottom - scale_px(36, hwnd) - m * 2 - scale_px(22, hwnd);
+            int g1_x = m + scale_px(st->splitter1_x, hwnd);
+            int g2_x = scale_px(st->splitter2_x, hwnd);
+            RECT g1 = { g1_x, spl_y, g1_x + splitter_w, spl_y + spl_h };
+            RECT g2 = { g2_x, spl_y, g2_x + splitter_w, spl_y + spl_h };
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(hwnd, &pt);
@@ -1295,15 +1343,14 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (st) {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            int margin = 8;
-            int gutter_w = 6;
-            int top = margin;
-            int body_h = rc.bottom - 36 - margin * 2;
-            int spl_y = top + 22, spl_h = body_h - 22;
-            RECT g1 = { margin + st->splitter1_x, spl_y, margin + st->splitter1_x + gutter_w, spl_y + spl_h };
-            int mid_left = margin + st->splitter1_x + gutter_w + margin;
-            RECT g2 = { mid_left + (st->splitter2_x - mid_left), spl_y,
-                        mid_left + (st->splitter2_x - mid_left) + gutter_w, spl_y + spl_h };
+            int m = scale_px(8, hwnd);
+            int splitter_w = scale_px(6, hwnd);
+            int spl_y = m + scale_px(22, hwnd);
+            int spl_h = rc.bottom - scale_px(36, hwnd) - m * 2 - scale_px(22, hwnd);
+            int g1_x = m + scale_px(st->splitter1_x, hwnd);
+            int g2_x = scale_px(st->splitter2_x, hwnd);
+            RECT g1 = { g1_x, spl_y, g1_x + splitter_w, spl_y + spl_h };
+            RECT g2 = { g2_x, spl_y, g2_x + splitter_w, spl_y + spl_h };
             POINT pt = { LOWORD(lp), HIWORD(lp) };
             if (PtInRect(&g1, pt)) {
                 st->dragging1 = true;
@@ -1321,13 +1368,16 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (st && st->dragging1) {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            int x = LOWORD(lp) - 3;
-            if (x < 100)
-                x = 100;
-            if (x > rc.right - 500)
-                x = rc.right - 500;
-            if (x != st->splitter1_x) {
-                st->splitter1_x = x;
+            int x = LOWORD(lp) - scale_px(3, hwnd);
+            int min_x = scale_px(100, hwnd);
+            int max_x = rc.right - scale_px(500, hwnd);
+            if (x < min_x)
+                x = min_x;
+            if (x > max_x)
+                x = max_x;
+            int logical = MulDiv(x, 96, dpi_for(hwnd));
+            if (logical != st->splitter1_x) {
+                st->splitter1_x = logical;
                 restore_layout(hwnd, st);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -1336,14 +1386,16 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (st && st->dragging2) {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            int x = LOWORD(lp) - 3;
-            int min_x = st->splitter1_x + 250;
+            int x = LOWORD(lp) - scale_px(3, hwnd);
+            int min_x = scale_px(st->splitter1_x + 250, hwnd);
+            int max_x = rc.right - scale_px(200, hwnd);
             if (x < min_x)
                 x = min_x;
-            if (x > rc.right - 200)
-                x = rc.right - 200;
-            if (x != st->splitter2_x) {
-                st->splitter2_x = x;
+            if (x > max_x)
+                x = max_x;
+            int logical = MulDiv(x, 96, dpi_for(hwnd));
+            if (logical != st->splitter2_x) {
+                st->splitter2_x = logical;
                 restore_layout(hwnd, st);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -1370,10 +1422,6 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 wchar_t buf[1024];
                 ListView_GetItemText(st->files_lv, nv->iItem, 0, buf, 1024);
                 st->selected_file = to_utf8(buf);
-                // Parse status prefix from "M  path/to/file" format
-                if (st->selected_file.size() > 3 && st->selected_file[1] == ' ') {
-                    st->selected_file = st->selected_file.substr(3);
-                }
                 restore_refresh_preview(st);
             }
         }
@@ -1391,6 +1439,10 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->current_hash.clear();
                 restore_refresh_files(st);
             }
+            return 0;
+        }
+        if (id == IDC_RES_FILTER && code == EN_CHANGE) {
+            restore_apply_filter(st);
             return 0;
         }
         if (id == IDC_RES_MODE_CHANGED || id == IDC_RES_MODE_ALL) {

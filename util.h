@@ -23,6 +23,13 @@ inline std::wstring to_wide(const std::string& s) {
     return ws;
 }
 
+inline int dpi_for(HWND hwnd) {
+    return GetDpiForWindow(hwnd);
+}
+inline int scale_px(int px, HWND hwnd) {
+    return MulDiv(px, dpi_for(hwnd), 96);
+}
+
 inline fs::path app_dir() {
     wchar_t buf[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
