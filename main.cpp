@@ -79,7 +79,7 @@ std::string now_ts() {
 
 void file_log(const std::string& msg) {
     std::error_code ec;
-    fs::path dir = app_dir() / "logs";
+    fs::path dir = app_dir();
     fs::create_directories(dir, ec);
     std::ofstream f(dir / "baconsaver.log", std::ios::app | std::ios::binary);
     f << now_ts() << "  " << msg << "\n";
