@@ -1,18 +1,18 @@
-#include "engine.h"
 #include "dialogs.h"
-#include "util.h"
+#include "engine.h"
 #include "json.h"
+#include "util.h"
 
-#include <windows.h>
 #include <commctrl.h>
+#include <ctime>
+#include <fstream>
+#include <memory>
 #include <shellapi.h>
 #include <shobjidl.h>
-#include <memory>
-#include <vector>
-#include <string>
-#include <fstream>
 #include <sstream>
-#include <ctime>
+#include <string>
+#include <vector>
+#include <windows.h>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -24,15 +24,20 @@ namespace {
 
 const wchar_t* MAIN_CLASS = L"BaconSaverMain";
 const wchar_t* MUTEX_NAME = L"BaconSaver-SingleInstance-Mutex";
-const UINT WM_APP_LOG  = WM_APP + 1;
+const UINT WM_APP_LOG = WM_APP + 1;
 const UINT WM_TRAYICON = WM_APP + 2;
 
-const COLORREF COL_BG   = RGB(0x1e, 0x1e, 0x1e);
+const COLORREF COL_BG = RGB(0x1e, 0x1e, 0x1e);
 const COLORREF COL_TEXT = RGB(0xcc, 0xcc, 0xcc);
 
 enum {
     ID_LIST = 1000,
-    ID_ADD, ID_REMOVE, ID_PAUSE, ID_IGNORES, ID_RESTORE, ID_REPO,
+    ID_ADD,
+    ID_REMOVE,
+    ID_PAUSE,
+    ID_IGNORES,
+    ID_RESTORE,
+    ID_REPO,
     ID_STATUS,
     ID_TRAY_SHOW = 2001,
     ID_TRAY_QUIT = 2002,
@@ -106,21 +111,28 @@ log_fn make_log(const std::wstring& path) {
 // Config
 // ---------------------------------------------------------------------------
 
-fs::path config_path() { return app_dir() / "config.json"; }
+fs::path config_path() {
+    return app_dir() / "config.json";
+}
 
 bool load_config_value(json::value& out) {
     std::ifstream in(config_path(), std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss; ss << in.rdbuf();
+    if (!in)
+        return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
     return json::parse(ss.str(), out);
 }
 
 void update_status() {
     size_t n = g_entries.size();
     std::wstring msg;
-    if (n == 0) msg = L"Not watching any directories";
-    else if (n == 1) msg = L"Watching 1 directory";
-    else msg = L"Watching " + std::to_wstring(n) + L" directories";
+    if (n == 0)
+        msg = L"Not watching any directories";
+    else if (n == 1)
+        msg = L"Watching 1 directory";
+    else
+        msg = L"Watching " + std::to_wstring(n) + L" directories";
     SetWindowTextW(g_status, msg.c_str());
 }
 
@@ -130,8 +142,7 @@ void list_set_text(int idx, const std::wstring& text) {
     SendMessageW(g_list, LB_SETCURSEL, idx, 0);
 }
 
-void start_engine(const std::wstring& path, const std::vector<std::string>& patterns,
-                  bool skip_binary = false) {
+void start_engine(const std::wstring& path, const std::vector<std::string>& patterns, bool skip_binary = false) {
     auto e = std::make_unique<entry>();
     e->path = path;
     e->engine = std::make_unique<watch_engine>(path, g_shadows_base, make_log(path), patterns, skip_binary);
@@ -184,7 +195,8 @@ void load_config() {
             for (auto& item : *pr->arr) {
                 std::string name;
                 std::vector<std::string> pats;
-                if (auto* n = item.find("name")) name = n->as_string();
+                if (auto* n = item.find("name"))
+                    name = n->as_string();
                 if (auto* pa = item.find("patterns")) {
                     if (pa->is_array() && pa->arr)
                         for (auto& p : *pa->arr)
@@ -212,12 +224,16 @@ void load_config() {
                 if (item.is_string()) {
                     path = to_wide(item.str);
                 } else {
-                    if (auto* p = item.find("path")) path = to_wide(p->as_string());
-                    if (auto* pa = item.find("paused")) paused = pa->as_bool();
+                    if (auto* p = item.find("path"))
+                        path = to_wide(p->as_string());
+                    if (auto* pa = item.find("paused"))
+                        paused = pa->as_bool();
                 }
-                if (path.empty()) continue;
+                if (path.empty())
+                    continue;
                 std::error_code ec;
-                if (!fs::is_directory(path, ec)) continue;
+                if (!fs::is_directory(path, ec))
+                    continue;
                 start_engine(path, {});
                 if (paused) {
                     auto& e = g_entries.back();
@@ -243,8 +259,7 @@ void set_repo_location() {
     // Reuse the folder picker indirectly via the add dialog's picker is internal;
     // implement directly here.
     IFileOpenDialog* dlg = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dlg))))
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))))
         return;
     DWORD opts = 0;
     dlg->GetOptions(&opts);
@@ -270,7 +285,8 @@ void set_repo_location() {
     if (g_have_base && new_base == g_shadows_base)
         return;
     if (!g_entries.empty()) {
-        int r = MessageBoxW(g_main,
+        int r = MessageBoxW(
+            g_main,
             L"Changing the repo location only affects newly added directories.\n"
             L"Existing watched directories keep their current repos.\n\nContinue?",
             L"Repo Location Changed", MB_YESNO | MB_ICONQUESTION);
@@ -287,9 +303,9 @@ void set_repo_location() {
 
 void add_directory() {
     if (!g_have_base) {
-        int r = MessageBoxW(g_main,
-            L"Set the repo location before adding directories.\n\nSet it now?",
-            L"Repo Location Required", MB_YESNO | MB_ICONQUESTION);
+        int r = MessageBoxW(
+            g_main, L"Set the repo location before adding directories.\n\nSet it now?", L"Repo Location Required",
+            MB_YESNO | MB_ICONQUESTION);
         if (r == IDYES)
             set_repo_location();
         if (!g_have_base)
@@ -304,18 +320,17 @@ void add_directory() {
         return;
     for (auto& e : g_entries) {
         if (e->path == path) {
-            MessageBoxW(g_main, (path + L" is already being watched.").c_str(),
-                        L"Already Watching", MB_ICONINFORMATION);
+            MessageBoxW(
+                g_main, (path + L" is already being watched.").c_str(), L"Already Watching", MB_ICONINFORMATION);
             return;
         }
     }
     auto [maj, min, pat] = git_version();
     if (maj < 2 || (maj == 2 && min < 37)) {
         std::wstring msg = L"Git version " + std::to_wstring(maj) + L"." + std::to_wstring(min) +
-            L" detected.\n\nFile-system monitor (core.fsmonitor) requires Git 2.37 or newer.\n"
-            L"Without it, git status may be slower on very large directories.\n\nProceed anyway?";
-        if (MessageBoxW(g_main, msg.c_str(), L"Git Version Notice",
-                        MB_YESNO | MB_ICONQUESTION) != IDYES)
+                           L" detected.\n\nFile-system monitor (core.fsmonitor) requires Git 2.37 or newer.\n"
+                           L"Without it, git status may be slower on very large directories.\n\nProceed anyway?";
+        if (MessageBoxW(g_main, msg.c_str(), L"Git Version Notice", MB_YESNO | MB_ICONQUESTION) != IDYES)
             return;
     }
     start_engine(path, patterns, skip_binary);
@@ -325,13 +340,14 @@ void add_directory() {
 
 void remove_directory() {
     int idx = selected_index();
-    if (idx < 0) return;
+    if (idx < 0)
+        return;
     std::wstring path = g_entries[idx]->path;
-    std::wstring msg = L"Stop watching " + path + L"?\n\n"
-        L"This will delete the backup history (shadow repo) for this directory.\n"
-        L"The original files are NOT affected.";
-    if (MessageBoxW(g_main, msg.c_str(), L"Remove Directory",
-                    MB_YESNO | MB_ICONWARNING) != IDYES)
+    std::wstring msg = L"Stop watching " + path +
+                       L"?\n\n"
+                       L"This will delete the backup history (shadow repo) for this directory.\n"
+                       L"The original files are NOT affected.";
+    if (MessageBoxW(g_main, msg.c_str(), L"Remove Directory", MB_YESNO | MB_ICONWARNING) != IDYES)
         return;
     std::wstring shadow = g_entries[idx]->engine->shadow_path();
     g_entries[idx]->engine->stop();
@@ -349,7 +365,8 @@ void remove_directory() {
 
 void toggle_pause() {
     int idx = selected_index();
-    if (idx < 0) return;
+    if (idx < 0)
+        return;
     auto& e = g_entries[idx];
     if (e->paused) {
         e->engine->resume();
@@ -381,7 +398,8 @@ void edit_ignores() {
 }
 
 void restore_dialog() {
-    if (!g_have_base) return;
+    if (!g_have_base)
+        return;
     int idx = selected_index();
     if (idx < 0 && g_entries.size() == 1)
         idx = 0;
@@ -392,8 +410,7 @@ void restore_dialog() {
     auto& e = g_entries[idx];
     fs::path shadow = e->engine->shadow_path();
     if (!fs::exists(shadow / ".git")) {
-        MessageBoxW(g_main, L"No shadow repo found for this directory.",
-                    L"No History", MB_ICONWARNING);
+        MessageBoxW(g_main, L"No shadow repo found for this directory.", L"No History", MB_ICONWARNING);
         return;
     }
     show_restore_dialog(g_main, e->path, e->engine->shadow_path());
@@ -410,8 +427,7 @@ void tray_add(HWND hwnd) {
     g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101),
-                                    IMAGE_ICON, 16, 16, 0);
+    g_nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101), IMAGE_ICON, 16, 16, 0);
     if (!g_nid.hIcon)
         g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(g_nid.szTip, L"BaconSaver");
@@ -428,7 +444,7 @@ void show_from_tray(HWND hwnd) {
     SetForegroundWindow(hwnd);
 }
 
-void quit_app(HWND ) {
+void quit_app(HWND) {
     file_log("BaconSaver shutting down");
     tray_remove();
     save_config();
@@ -443,25 +459,27 @@ void quit_app(HWND ) {
 // ---------------------------------------------------------------------------
 
 void layout(HWND hwnd) {
-    RECT rc; GetClientRect(hwnd, &rc);
+    RECT rc;
+    GetClientRect(hwnd, &rc);
     int W = rc.right, H = rc.bottom;
     int margin = 8;
     int status_h = 22;
     int left_w = g_splitter_x;
     int splitter_w = 6;
-    int body_top = margin + 18;          // below the "Watched Directories" label
+    int body_top = margin + 18; // below the "Watched Directories" label
     int body_h = H - status_h - body_top - margin;
 
     const int btn_h = 28, btn_gap = 4;
     int btn_area = 6 * (btn_h + btn_gap);
     int list_h = body_h - btn_area - btn_gap;
-    if (list_h < 60) list_h = 60;
+    if (list_h < 60)
+        list_h = 60;
 
     MoveWindow(GetDlgItem(hwnd, 900), margin, margin, left_w, 18, TRUE); // label
     MoveWindow(g_list, margin, body_top, left_w, list_h, TRUE);
 
     int by = body_top + list_h + btn_gap;
-    int ids[6] = {ID_ADD, ID_REMOVE, ID_PAUSE, ID_IGNORES, ID_RESTORE, ID_REPO};
+    int ids[6] = { ID_ADD, ID_REMOVE, ID_PAUSE, ID_IGNORES, ID_RESTORE, ID_REPO };
     for (int i = 0; i < 6; ++i) {
         MoveWindow(GetDlgItem(hwnd, ids[i]), margin, by, left_w, btn_h, TRUE);
         by += btn_h + btn_gap;
@@ -478,167 +496,190 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     switch (msg) {
-        case WM_CREATE: {
-            g_main = hwnd;
-            HINSTANCE hi = GetModuleHandleW(nullptr);
+    case WM_CREATE: {
+        g_main = hwnd;
+        HINSTANCE hi = GetModuleHandleW(nullptr);
 
-            CreateWindowExW(0, L"STATIC", L"Watched Directories", WS_CHILD | WS_VISIBLE,
-                            0, 0, 10, 10, hwnd, (HMENU)900, hi, nullptr);
-            g_list = CreateWindowExW(0, L"LISTBOX", L"",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-                0, 0, 10, 10, hwnd, (HMENU)ID_LIST, hi, nullptr);
+        CreateWindowExW(
+            0, L"STATIC", L"Watched Directories", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, hwnd, (HMENU)900, hi, nullptr);
+        g_list = CreateWindowExW(
+            0, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 0, 0, 10, 10,
+            hwnd, (HMENU)ID_LIST, hi, nullptr);
 
-            struct { int id; const wchar_t* text; } btns[] = {
-                {ID_ADD, L"Add Directory..."},
-                {ID_REMOVE, L"Remove"},
-                {ID_PAUSE, L"Pause / Resume"},
-                {ID_IGNORES, L"Edit Ignores..."},
-                {ID_RESTORE, L"Restore..."},
-                {ID_REPO, L"Set Repo Location..."},
-            };
-            for (auto& b : btns)
-                CreateWindowExW(0, L"BUTTON", b.text, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)b.id, hi, nullptr);
+        struct {
+            int id;
+            const wchar_t* text;
+        } btns[] = {
+            { ID_ADD, L"Add Directory..." },    { ID_REMOVE, L"Remove" },      { ID_PAUSE, L"Pause / Resume" },
+            { ID_IGNORES, L"Edit Ignores..." }, { ID_RESTORE, L"Restore..." }, { ID_REPO, L"Set Repo Location..." },
+        };
+        for (auto& b : btns)
+            CreateWindowExW(
+                0, L"BUTTON", b.text, WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)b.id, hi,
+                nullptr);
 
-            g_console = CreateWindowExW(0, L"EDIT", L"",
-                WS_CHILD | WS_VISIBLE | WS_BORDER |
-                ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-                0, 0, 10, 10, hwnd, nullptr, hi, nullptr);
-            SendMessageW(g_console, EM_SETLIMITTEXT, 0, 0);
+        g_console = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 0, 0, 10,
+            10, hwnd, nullptr, hi, nullptr);
+        SendMessageW(g_console, EM_SETLIMITTEXT, 0, 0);
 
-            g_status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-                                       0, 0, 10, 10, hwnd, (HMENU)ID_STATUS, hi, nullptr);
+        g_status = CreateWindowExW(
+            0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP, 0, 0, 10, 10, hwnd, (HMENU)ID_STATUS, hi,
+            nullptr);
 
-            // Fonts
-            HFONT gui = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            SendMessageW(GetDlgItem(hwnd, 900), WM_SETFONT, (WPARAM)gui, TRUE);
-            SendMessageW(g_list, WM_SETFONT, (WPARAM)gui, TRUE);
-            SendMessageW(g_status, WM_SETFONT, (WPARAM)gui, TRUE);
-            for (auto& b : btns)
-                SendMessageW(GetDlgItem(hwnd, b.id), WM_SETFONT, (WPARAM)gui, TRUE);
-            g_mono_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                                      FIXED_PITCH | FF_MODERN, L"Consolas");
-            SendMessageW(g_console, WM_SETFONT, (WPARAM)g_mono_font, TRUE);
+        // Fonts
+        HFONT gui = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        SendMessageW(GetDlgItem(hwnd, 900), WM_SETFONT, (WPARAM)gui, TRUE);
+        SendMessageW(g_list, WM_SETFONT, (WPARAM)gui, TRUE);
+        SendMessageW(g_status, WM_SETFONT, (WPARAM)gui, TRUE);
+        for (auto& b : btns)
+            SendMessageW(GetDlgItem(hwnd, b.id), WM_SETFONT, (WPARAM)gui, TRUE);
+        g_mono_font = CreateFontW(
+            -15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+            FIXED_PITCH | FF_MODERN, L"Consolas");
+        SendMessageW(g_console, WM_SETFONT, (WPARAM)g_mono_font, TRUE);
 
-            tray_add(hwnd);
+        tray_add(hwnd);
+        return 0;
+    }
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED) {
+            ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
-        case WM_SIZE:
-            if (wp == SIZE_MINIMIZED) {
-                ShowWindow(hwnd, SW_HIDE);
-                return 0;
-            }
-            layout(hwnd);
-            return 0;
-        case WM_SETCURSOR:
-            {
-                RECT rc; GetClientRect(hwnd, &rc);
-                int gutter_x = 8 + g_splitter_x;
-                int gutter_w = 6;
-                int body_top = 8 + 18;
-                int body_h = rc.bottom - 22 - body_top - 8;
-                RECT gutter = {gutter_x, body_top, gutter_x + gutter_w, body_top + body_h};
-                POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
-                if (PtInRect(&gutter, pt)) {
-                    SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
-                    return TRUE;
-                }
-            }
-            break;
-        case WM_LBUTTONDOWN:
-            {
-                RECT rc; GetClientRect(hwnd, &rc);
-                int gutter_x = 8 + g_splitter_x;
-                int gutter_w = 6;
-                int body_top = 8 + 18;
-                int body_h = rc.bottom - 22 - body_top - 8;
-                RECT gutter = {gutter_x, body_top, gutter_x + gutter_w, body_top + body_h};
-                POINT pt = {LOWORD(lp), HIWORD(lp)};
-                if (PtInRect(&gutter, pt)) {
-                    g_dragging = true;
-                    SetCapture(hwnd);
-                    return 0;
-                }
-            }
-            break;
-        case WM_MOUSEMOVE:
-            if (g_dragging) {
-                RECT rc; GetClientRect(hwnd, &rc);
-                int x = LOWORD(lp) - 3;
-                if (x < 80) x = 80;
-                if (x > rc.right - 280) x = rc.right - 280;
-                if (x != g_splitter_x) {
-                    g_splitter_x = x;
-                    layout(hwnd);
-                    InvalidateRect(hwnd, nullptr, TRUE);
-                }
-                return 0;
-            }
-            break;
-        case WM_LBUTTONUP:
-            if (g_dragging) {
-                g_dragging = false;
-                ReleaseCapture();
-                return 0;
-            }
-            break;
-        case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLOREDIT: {
-            if ((HWND)lp == g_console) {
-                HDC dc = (HDC)wp;
-                SetTextColor(dc, COL_TEXT);
-                SetBkColor(dc, COL_BG);
-                return (LRESULT)g_dark_brush;
-            }
-            break;
+        layout(hwnd);
+        return 0;
+    case WM_SETCURSOR: {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int gutter_x = 8 + g_splitter_x;
+        int gutter_w = 6;
+        int body_top = 8 + 18;
+        int body_h = rc.bottom - 22 - body_top - 8;
+        RECT gutter = { gutter_x, body_top, gutter_x + gutter_w, body_top + body_h };
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        if (PtInRect(&gutter, pt)) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            return TRUE;
         }
-        case WM_APP_LOG: {
-            auto* s = reinterpret_cast<std::string*>(lp);
-            if (s) {
-                console_append(to_wide(*s));
-                file_log(*s);
-                delete s;
+    } break;
+    case WM_LBUTTONDOWN: {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int gutter_x = 8 + g_splitter_x;
+        int gutter_w = 6;
+        int body_top = 8 + 18;
+        int body_h = rc.bottom - 22 - body_top - 8;
+        RECT gutter = { gutter_x, body_top, gutter_x + gutter_w, body_top + body_h };
+        POINT pt = { LOWORD(lp), HIWORD(lp) };
+        if (PtInRect(&gutter, pt)) {
+            g_dragging = true;
+            SetCapture(hwnd);
+            return 0;
+        }
+    } break;
+    case WM_MOUSEMOVE:
+        if (g_dragging) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int x = LOWORD(lp) - 3;
+            if (x < 80)
+                x = 80;
+            if (x > rc.right - 280)
+                x = rc.right - 280;
+            if (x != g_splitter_x) {
+                g_splitter_x = x;
+                layout(hwnd);
+                InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
         }
-        case WM_TRAYICON: {
-            if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
+        break;
+    case WM_LBUTTONUP:
+        if (g_dragging) {
+            g_dragging = false;
+            ReleaseCapture();
+            return 0;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT: {
+        if ((HWND)lp == g_console) {
+            HDC dc = (HDC)wp;
+            SetTextColor(dc, COL_TEXT);
+            SetBkColor(dc, COL_BG);
+            return (LRESULT)g_dark_brush;
+        }
+        break;
+    }
+    case WM_APP_LOG: {
+        auto* s = reinterpret_cast<std::string*>(lp);
+        if (s) {
+            console_append(to_wide(*s));
+            file_log(*s);
+            delete s;
+        }
+        return 0;
+    }
+    case WM_TRAYICON: {
+        if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
+            show_from_tray(hwnd);
+        } else if (LOWORD(lp) == WM_RBUTTONUP) {
+            POINT pt;
+            GetCursorPos(&pt);
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, L"Show");
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu, MF_STRING, ID_TRAY_QUIT, L"Quit");
+            SetForegroundWindow(hwnd);
+            int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, nullptr);
+            DestroyMenu(menu);
+            if (cmd == ID_TRAY_SHOW)
                 show_from_tray(hwnd);
-            } else if (LOWORD(lp) == WM_RBUTTONUP) {
-                POINT pt; GetCursorPos(&pt);
-                HMENU menu = CreatePopupMenu();
-                AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, L"Show");
-                AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-                AppendMenuW(menu, MF_STRING, ID_TRAY_QUIT, L"Quit");
-                SetForegroundWindow(hwnd);
-                int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
-                                              pt.x, pt.y, 0, hwnd, nullptr);
-                DestroyMenu(menu);
-                if (cmd == ID_TRAY_SHOW) show_from_tray(hwnd);
-                else if (cmd == ID_TRAY_QUIT) quit_app(hwnd);
-            }
-            return 0;
+            else if (cmd == ID_TRAY_QUIT)
+                quit_app(hwnd);
         }
-        case WM_COMMAND: {
-            switch (LOWORD(wp)) {
-                case ID_ADD: add_directory(); return 0;
-                case ID_REMOVE: remove_directory(); return 0;
-                case ID_PAUSE: toggle_pause(); return 0;
-                case ID_IGNORES: edit_ignores(); return 0;
-                case ID_RESTORE: restore_dialog(); return 0;
-                case ID_REPO: set_repo_location(); return 0;
-                case ID_TRAY_SHOW: show_from_tray(hwnd); return 0;
-                case ID_TRAY_QUIT: quit_app(hwnd); return 0;
-            }
+        return 0;
+    }
+    case WM_COMMAND: {
+        switch (LOWORD(wp)) {
+        case ID_ADD:
+            add_directory();
             return 0;
-        }
-        case WM_CLOSE:
+        case ID_REMOVE:
+            remove_directory();
+            return 0;
+        case ID_PAUSE:
+            toggle_pause();
+            return 0;
+        case ID_IGNORES:
+            edit_ignores();
+            return 0;
+        case ID_RESTORE:
+            restore_dialog();
+            return 0;
+        case ID_REPO:
+            set_repo_location();
+            return 0;
+        case ID_TRAY_SHOW:
+            show_from_tray(hwnd);
+            return 0;
+        case ID_TRAY_QUIT:
             quit_app(hwnd);
             return 0;
-        case WM_DESTROY:
-            if (g_mono_font) DeleteObject(g_mono_font);
-            return 0;
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        quit_app(hwnd);
+        return 0;
+    case WM_DESTROY:
+        if (g_mono_font)
+            DeleteObject(g_mono_font);
+        return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -660,8 +701,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    INITCOMMONCONTROLSEX icc = {sizeof(icc),
-        ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_BAR_CLASSES };
     InitCommonControlsEx(&icc);
 
     g_dark_brush = CreateSolidBrush(COL_BG);
@@ -675,9 +715,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     wc.hIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(101), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
     RegisterClassW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, MAIN_CLASS, L"BaconSaver", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                               CW_USEDEFAULT, CW_USEDEFAULT, 1000, 600,
-                               nullptr, nullptr, hInstance, nullptr);
+    HWND hwnd = CreateWindowExW(
+        0, MAIN_CLASS, L"BaconSaver", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 1000, 600,
+        nullptr, nullptr, hInstance, nullptr);
 
     file_log("BaconSaver started");
     load_config();
@@ -690,7 +730,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     // First-run: no config yet -> offer to set repo location.
     if (!fs::exists(config_path())) {
-        int r = MessageBoxW(hwnd,
+        int r = MessageBoxW(
+            hwnd,
             L"No configuration found.\n\n"
             L"Choose a location for the backup repository.\n"
             L"This is where file history (git repos) will be stored.",
@@ -707,8 +748,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         }
     }
 
-    if (g_dark_brush) DeleteObject(g_dark_brush);
+    if (g_dark_brush)
+        DeleteObject(g_dark_brush);
     CoUninitialize();
-    if (mutex) CloseHandle(mutex);
+    if (mutex)
+        CloseHandle(mutex);
     return (int)msg.wParam;
 }

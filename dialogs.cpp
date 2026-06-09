@@ -118,11 +118,10 @@ void set_font(HWND h, HFONT f) {
     SendMessageW(h, WM_SETFONT, (WPARAM)f, TRUE);
 }
 
-HWND make(LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, int w, int h,
-          HWND parent, int id) {
-    HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
-                             x, y, w, h, parent, (HMENU)(INT_PTR)id,
-                             GetModuleHandleW(nullptr), nullptr);
+HWND make(LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, int w, int h, HWND parent, int id) {
+    HWND c = CreateWindowExW(
+        0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr),
+        nullptr);
     set_font(c, ui_font());
     return c;
 }
@@ -188,8 +187,7 @@ const std::vector<std::string>* preset_patterns(const std::string& name) {
 
 bool pick_folder(HWND parent, std::wstring& out) {
     IFileOpenDialog* dlg = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dlg))))
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))))
         return false;
     bool ok = false;
     DWORD opts = 0;
@@ -231,8 +229,8 @@ LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         st = reinterpret_cast<input_state*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
         make(L"STATIC", st->prompt.c_str(), 0, 12, 12, 340, 18, hwnd, -1);
-        st->edit = make(L"EDIT", st->text.c_str(),
-                        WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 12, 34, 340, 24, hwnd, ID_SIMPLE_TEXT);
+        st->edit = make(
+            L"EDIT", st->text.c_str(), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 12, 34, 340, 24, hwnd, ID_SIMPLE_TEXT);
         make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 178, 70, 80, 26, hwnd, IDOK);
         make(L"BUTTON", L"Cancel", WS_TABSTOP, 272, 70, 80, 26, hwnd, IDCANCEL);
         SetFocus(st->edit);
@@ -259,8 +257,7 @@ LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-bool show_text_input(HWND parent, const std::wstring& title, const std::wstring& prompt,
-                     std::wstring& text) {
+bool show_text_input(HWND parent, const std::wstring& title, const std::wstring& prompt, std::wstring& text) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW wc = {};
@@ -281,8 +278,9 @@ bool show_text_input(HWND parent, const std::wstring& title, const std::wstring&
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     SIZE ws = window_size_for_client(364, 112, style, WS_EX_DLGMODALFRAME);
     int x = pr.left + 60, y = pr.top + 80;
-    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"BaconInputDlg", title.c_str(),
-                               style, x, y, ws.cx, ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
+    HWND dlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, L"BaconInputDlg", title.c_str(), style, x, y, ws.cx, ws.cy, parent, nullptr,
+        GetModuleHandleW(nullptr), &st);
     run_modal(parent, dlg);
     if (st.ok)
         text = st.text;
@@ -304,8 +302,10 @@ LRESULT CALLBACK view_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
         st = reinterpret_cast<view_state*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
-        st->edit = make(L"EDIT", L"", WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-                        0, 0, 10, 10, hwnd, ID_SIMPLE_TEXT);
+        st->edit = make(
+            L"EDIT", L"",
+            WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL, 0, 0,
+            10, 10, hwnd, ID_SIMPLE_TEXT);
         return 0;
     }
     case WM_SIZE: {
@@ -340,15 +340,14 @@ void show_text_view(HWND parent, const std::wstring& title, const std::wstring& 
         registered = true;
     }
     view_state st;
-    HWND dlg = CreateWindowExW(0, L"BaconViewDlg", title.c_str(),
-                               WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
-                               CW_USEDEFAULT, CW_USEDEFAULT, 640, 460, parent, nullptr,
-                               GetModuleHandleW(nullptr), &st);
+    HWND dlg = CreateWindowExW(
+        0, L"BaconViewDlg", title.c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
+        CW_USEDEFAULT, CW_USEDEFAULT, 640, 460, parent, nullptr, GetModuleHandleW(nullptr), &st);
     HWND close = make(L"BUTTON", L"Close", WS_TABSTOP, 0, 0, 80, 26, dlg, IDCANCEL);
     (void)close;
-    HFONT mono = CreateFontW(-14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                             FIXED_PITCH | FF_MODERN, L"Consolas");
+    HFONT mono = CreateFontW(
+        -14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+        FIXED_PITCH | FF_MODERN, L"Consolas");
     set_font(st.edit, mono);
     SetWindowTextW(st.edit, text.c_str());
     RECT rc;
@@ -475,8 +474,8 @@ void add_preview(HWND hwnd, add_state* st) {
         body += w;
         body += L"\r\n";
     }
-    std::wstring title = L"Preview: " + std::to_wstring(watched.size()) +
-                         L" files watched, " + std::to_wstring(ignored) + L" ignored";
+    std::wstring title =
+        L"Preview: " + std::to_wstring(watched.size()) + L" files watched, " + std::to_wstring(ignored) + L" ignored";
     show_text_view(hwnd, title, body);
 }
 
@@ -495,24 +494,25 @@ LRESULT CALLBACK add_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         make(L"STATIC", L"Presets:", 0, 12, 48, 60, 18, hwnd, -1);
         int px = 78;
         for (size_t i = 0; i < g_presets.size(); ++i) {
-            HWND cb = make(L"BUTTON", to_wide(g_presets[i].first).c_str(),
-                           WS_TABSTOP | BS_AUTOCHECKBOX, px, 46, 90, 22, hwnd, IDC_ADD_PRESET_BASE + (int)i);
+            HWND cb = make(
+                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP | BS_AUTOCHECKBOX, px, 46, 90, 22, hwnd,
+                IDC_ADD_PRESET_BASE + (int)i);
             st->preset_checks.push_back(cb);
             px += 96;
         }
 
-        make(L"BUTTON", L"Skip binary files", WS_TABSTOP | BS_AUTOCHECKBOX,
-             12, 76, 160, 22, hwnd, IDC_ADD_SKIP_BINARY);
+        make(L"BUTTON", L"Skip binary files", WS_TABSTOP | BS_AUTOCHECKBOX, 12, 76, 160, 22, hwnd, IDC_ADD_SKIP_BINARY);
 
-        make(L"STATIC",
-             L"Patterns without / match any path component.\r\n"
-             L"Patterns with / match the full relative path.\r\n"
-             L"Wildcards:  *  ?  [seq]",
-             0, 12, 104, 480, 52, hwnd, -1);
+        make(
+            L"STATIC",
+            L"Patterns without / match any path component.\r\n"
+            L"Patterns with / match the full relative path.\r\n"
+            L"Wildcards:  *  ?  [seq]",
+            0, 12, 104, 480, 52, hwnd, -1);
 
-        st->patterns = make(L"LISTBOX", L"",
-                            WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-                            12, 160, 484, 220, hwnd, IDC_ADD_PATTERNS);
+        st->patterns = make(
+            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 12, 160, 484, 220, hwnd,
+            IDC_ADD_PATTERNS);
 
         make(L"BUTTON", L"Add...", WS_TABSTOP, 12, 388, 80, 26, hwnd, IDC_ADD_ADD);
         make(L"BUTTON", L"Remove", WS_TABSTOP, 98, 388, 80, 26, hwnd, IDC_ADD_REMOVE);
@@ -594,9 +594,8 @@ LRESULT CALLBACK add_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 } // anonymous namespace
 
-bool show_add_directory_dialog(HWND parent, std::wstring& out_path,
-                               std::vector<std::string>& out_patterns,
-                               bool& out_skip_binary) {
+bool show_add_directory_dialog(
+    HWND parent, std::wstring& out_path, std::vector<std::string>& out_patterns, bool& out_skip_binary) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW wc = {};
@@ -611,18 +610,17 @@ bool show_add_directory_dialog(HWND parent, std::wstring& out_path,
     add_state st;
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     SIZE ws = window_size_for_client(512, 470, style, WS_EX_DLGMODALFRAME);
-    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"BaconAddDlg", L"Add Watched Directory",
-                               style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx, ws.cy, parent, nullptr,
-                               GetModuleHandleW(nullptr), &st);
+    HWND dlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, L"BaconAddDlg", L"Add Watched Directory", style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx,
+        ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
     // Center on parent
     RECT pr, dr;
     GetWindowRect(parent, &pr);
     GetWindowRect(dlg, &dr);
     int w = dr.right - dr.left, h = dr.bottom - dr.top;
-    SetWindowPos(dlg, nullptr,
-                 pr.left + ((pr.right - pr.left) - w) / 2,
-                 pr.top + ((pr.bottom - pr.top) - h) / 2,
-                 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    SetWindowPos(
+        dlg, nullptr, pr.left + ((pr.right - pr.left) - w) / 2, pr.top + ((pr.bottom - pr.top) - h) / 2, 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER);
     run_modal(parent, dlg);
     if (st.ok) {
         out_path = st.path;
@@ -668,18 +666,20 @@ LRESULT CALLBACK ignore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         make(L"STATIC", L"Add preset:", 0, 12, 14, 80, 18, hwnd, -1);
         int px = 92;
         for (size_t i = 0; i < g_presets.size(); ++i) {
-            make(L"BUTTON", to_wide(g_presets[i].first).c_str(),
-                 WS_TABSTOP, px, 10, 90, 26, hwnd, IDC_IGN_PRESET_BASE + (int)i);
+            make(
+                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP, px, 10, 90, 26, hwnd,
+                IDC_IGN_PRESET_BASE + (int)i);
             px += 96;
         }
-        make(L"STATIC",
-             L"Patterns without / match any path component.\r\n"
-             L"Patterns with / match the full relative path.\r\n"
-             L"Wildcards:  *  ?  [seq]",
-             0, 12, 44, 430, 52, hwnd, -1);
-        st->patterns = make(L"LISTBOX", L"",
-                            WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-                            12, 100, 434, 230, hwnd, IDC_IGN_PATTERNS);
+        make(
+            L"STATIC",
+            L"Patterns without / match any path component.\r\n"
+            L"Patterns with / match the full relative path.\r\n"
+            L"Wildcards:  *  ?  [seq]",
+            0, 12, 44, 430, 52, hwnd, -1);
+        st->patterns = make(
+            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 12, 100, 434, 230, hwnd,
+            IDC_IGN_PATTERNS);
         make(L"BUTTON", L"Add...", WS_TABSTOP, 12, 338, 80, 26, hwnd, IDC_IGN_ADD);
         make(L"BUTTON", L"Remove", WS_TABSTOP, 98, 338, 80, 26, hwnd, IDC_IGN_REMOVE);
         make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 270, 338, 80, 26, hwnd, IDOK);
@@ -729,8 +729,7 @@ LRESULT CALLBACK ignore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 } // anonymous namespace
 
-bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current,
-                        std::vector<std::string>& out_patterns) {
+bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current, std::vector<std::string>& out_patterns) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW wc = {};
@@ -745,18 +744,17 @@ bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current,
     ignore_state st;
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     SIZE ws = window_size_for_client(462, 380, style, WS_EX_DLGMODALFRAME);
-    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"BaconIgnoreDlg", L"Edit Ignore Patterns",
-                               style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx, ws.cy, parent, nullptr,
-                               GetModuleHandleW(nullptr), &st);
+    HWND dlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, L"BaconIgnoreDlg", L"Edit Ignore Patterns", style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx,
+        ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
     listbox_set(st.patterns, current);
     RECT pr, dr;
     GetWindowRect(parent, &pr);
     GetWindowRect(dlg, &dr);
     int w = dr.right - dr.left, h = dr.bottom - dr.top;
-    SetWindowPos(dlg, nullptr,
-                 pr.left + ((pr.right - pr.left) - w) / 2,
-                 pr.top + ((pr.bottom - pr.top) - h) / 2,
-                 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    SetWindowPos(
+        dlg, nullptr, pr.left + ((pr.right - pr.left) - w) / 2, pr.top + ((pr.bottom - pr.top) - h) / 2, 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER);
     run_modal(parent, dlg);
     if (st.ok)
         out_patterns = st.result;
@@ -804,8 +802,8 @@ bool is_binary(const std::string& data) {
         return false;
     if (data.size() >= 2 && ((unsigned char)data[0] == 0xfe && (unsigned char)data[1] == 0xff))
         return false;
-    if (data.size() >= 3 && (unsigned char)data[0] == 0xef &&
-        (unsigned char)data[1] == 0xbb && (unsigned char)data[2] == 0xbf)
+    if (data.size() >= 3 && (unsigned char)data[0] == 0xef && (unsigned char)data[1] == 0xbb &&
+        (unsigned char)data[2] == 0xbf)
         return false;
     size_t n = data.size() < 8192 ? data.size() : 8192;
     for (size_t i = 0; i < n; ++i)
@@ -817,8 +815,7 @@ bool is_binary(const std::string& data) {
 std::wstring decode_text(const std::string& content, int tab_width) {
     std::wstring text;
     if (content.size() >= 2 && (unsigned char)content[0] == 0xff && (unsigned char)content[1] == 0xfe)
-        text.assign(reinterpret_cast<const wchar_t*>(content.data() + 2),
-                    (content.size() - 2) / 2);
+        text.assign(reinterpret_cast<const wchar_t*>(content.data() + 2), (content.size() - 2) / 2);
     else if (content.size() >= 2 && (unsigned char)content[0] == 0xfe && (unsigned char)content[1] == 0xff)
         for (size_t i = 2; i + 1 < content.size(); i += 2)
             text += (wchar_t)(((unsigned char)content[i] << 8) | (unsigned char)content[i + 1]);
@@ -930,8 +927,7 @@ void restore_refresh_preview(restore_state* st) {
         }
         bool diff = SendMessageW(st->view_diff, BM_GETCHECK, 0, 0) == BST_CHECKED;
         if (diff) {
-            std::string d = get_diff_for_commit(st->git_dir, st->work_tree,
-                                                st->current_hash, st->selected_file);
+            std::string d = get_diff_for_commit(st->git_dir, st->work_tree, st->current_hash, st->selected_file);
             if (!trim(d).empty())
                 show_diff(st->preview, d);
             else
@@ -940,8 +936,7 @@ void restore_refresh_preview(restore_state* st) {
         }
         std::string content = get_file_at_commit(st->git_dir, st->current_hash, st->selected_file);
         if (is_binary(content))
-            set_preview_plain(st->preview,
-                              L"[Binary file - " + std::to_wstring(content.size()) + L" bytes]");
+            set_preview_plain(st->preview, L"[Binary file - " + std::to_wstring(content.size()) + L" bytes]");
         else
             set_preview_plain(st->preview, decode_text(content, st->tab_width));
     } catch (const std::exception& e) {
@@ -1001,8 +996,7 @@ void restore_refresh_files(restore_state* st) {
         wchar_t sbuf[64];
         ListView_GetItemText(st->files_lv, 0, 1, sbuf, 64);
         st->selected_status = to_utf8(sbuf);
-        ListView_SetItemState(st->files_lv, 0, LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(st->files_lv, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         restore_refresh_preview(st);
     }
 }
@@ -1064,8 +1058,8 @@ void restore_export(HWND hwnd, restore_state* st) {
 
     auto exported = export_files(st->git_dir, st->current_hash, checked, dest);
     if (!exported.empty()) {
-        std::wstring msg = L"Exported " + std::to_wstring(exported.size()) +
-                           L" file(s) to:\n" + dest.wstring() + L"\n\nOpen the folder?";
+        std::wstring msg = L"Exported " + std::to_wstring(exported.size()) + L" file(s) to:\n" + dest.wstring() +
+                           L"\n\nOpen the folder?";
         if (MessageBoxW(hwnd, msg.c_str(), L"Export Complete", MB_YESNO | MB_ICONINFORMATION) == IDYES)
             ShellExecuteW(nullptr, L"open", dest.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     } else {
@@ -1095,8 +1089,7 @@ void restore_pick_font(HWND hwnd, restore_state* st) {
     HDC dc = GetDC(hwnd);
     int dpi = GetDeviceCaps(dc, LOGPIXELSY);
     ReleaseDC(hwnd, dc);
-    int pts = st->font.lfHeight < 0 ? MulDiv(-st->font.lfHeight, 72, dpi)
-                                    : MulDiv(st->font.lfHeight, 72, dpi);
+    int pts = st->font.lfHeight < 0 ? MulDiv(-st->font.lfHeight, 72, dpi) : MulDiv(st->font.lfHeight, 72, dpi);
     f.set("size", json::value(pts));
     cfg.set("restore_font", f);
     save_config(cfg);
@@ -1203,8 +1196,7 @@ void restore_goto_line(HWND hwnd, restore_state* st) {
     if (total <= 0)
         return;
     std::wstring s = L"1";
-    if (!show_text_input(hwnd, L"Go to Line",
-                         (L"Line (1-" + std::to_wstring(total) + L"):"), s))
+    if (!show_text_input(hwnd, L"Go to Line", (L"Line (1-" + std::to_wstring(total) + L"):"), s))
         return;
     int line = _wtoi(s.c_str());
     if (line < 1)
@@ -1228,24 +1220,22 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
 
         make(L"STATIC", L"Snapshots", 0, 0, 0, 10, 10, hwnd, IDC_RES_SNAP_LBL);
-        st->commits_lb = make(L"LISTBOX", L"",
-                              WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-                              0, 0, 10, 10, hwnd, IDC_RES_COMMITS);
+        st->commits_lb = make(
+            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 0, 0, 10, 10, hwnd, IDC_RES_COMMITS);
 
-        st->mode_changed = make(L"BUTTON", L"Changed files",
-                                WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd, IDC_RES_MODE_CHANGED);
-        st->mode_all = make(L"BUTTON", L"Full snapshot",
-                            BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd, IDC_RES_MODE_ALL);
+        st->mode_changed = make(
+            L"BUTTON", L"Changed files", WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd,
+            IDC_RES_MODE_CHANGED);
+        st->mode_all = make(L"BUTTON", L"Full snapshot", BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd, IDC_RES_MODE_ALL);
         SendMessageW(st->mode_changed, BM_SETCHECK, BST_CHECKED, 0);
         make(L"BUTTON", L"Select All", WS_TABSTOP, 0, 0, 10, 10, hwnd, IDC_RES_SEL_ALL);
         make(L"BUTTON", L"Select None", WS_TABSTOP, 0, 0, 10, 10, hwnd, IDC_RES_SEL_NONE);
 
-        st->files_lv = CreateWindowExW(0, WC_LISTVIEWW, L"",
-                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
-                                       0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_RES_FILES, GetModuleHandleW(nullptr), nullptr);
+        st->files_lv = CreateWindowExW(
+            0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL, 0, 0, 10,
+            10, hwnd, (HMENU)(INT_PTR)IDC_RES_FILES, GetModuleHandleW(nullptr), nullptr);
         set_font(st->files_lv, ui_font());
-        ListView_SetExtendedListViewStyle(st->files_lv,
-                                          LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
+        ListView_SetExtendedListViewStyle(st->files_lv, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
         {
             LVCOLUMNW col = {};
             col.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -1257,16 +1247,18 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ListView_InsertColumn(st->files_lv, 1, &col);
         }
 
-        st->view_content = make(L"BUTTON", L"Content",
-                                WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd, IDC_RES_VIEW_CONTENT);
+        st->view_content = make(
+            L"BUTTON", L"Content", WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd,
+            IDC_RES_VIEW_CONTENT);
         st->view_diff = make(L"BUTTON", L"Diff", BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd, IDC_RES_VIEW_DIFF);
         SendMessageW(st->view_content, BM_SETCHECK, BST_CHECKED, 0);
         make(L"BUTTON", L"Font...", WS_TABSTOP, 0, 0, 10, 10, hwnd, IDC_RES_FONT);
 
-        st->preview = CreateWindowExW(0, MSFTEDIT_CLASS, L"",
-                                      WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | WS_HSCROLL |
-                                          ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-                                      0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_RES_PREVIEW, GetModuleHandleW(nullptr), nullptr);
+        st->preview = CreateWindowExW(
+            0, MSFTEDIT_CLASS, L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
+                ES_AUTOHSCROLL,
+            0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_RES_PREVIEW, GetModuleHandleW(nullptr), nullptr);
         SendMessageW(st->preview, EM_SETBKGNDCOLOR, 0, (LPARAM)COL_BG);
         SendMessageW(st->preview, EM_SETTARGETDEVICE, 0, 1); // disable word wrap
         restore_load_font(hwnd, st);
@@ -1457,8 +1449,7 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 } // anonymous namespace
 
-void show_restore_dialog(HWND parent, const std::wstring& watch_path,
-                         const std::wstring& shadow_path) {
+void show_restore_dialog(HWND parent, const std::wstring& watch_path, const std::wstring& shadow_path) {
     LoadLibraryW(L"Msftedit.dll");
     static bool registered = false;
     if (!registered) {
@@ -1479,10 +1470,9 @@ void show_restore_dialog(HWND parent, const std::wstring& watch_path,
     int w, h;
     restore_load_size(w, h);
     std::wstring title = L"Restore - " + watch_path;
-    HWND dlg = CreateWindowExW(0, L"BaconRestoreDlg", title.c_str(),
-                               WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                               CW_USEDEFAULT, CW_USEDEFAULT, w, h, parent, nullptr,
-                               GetModuleHandleW(nullptr), &st);
+    HWND dlg = CreateWindowExW(
+        0, L"BaconRestoreDlg", title.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, w, h,
+        parent, nullptr, GetModuleHandleW(nullptr), &st);
 
     // Modal loop with Ctrl+G handling
     EnableWindow(parent, FALSE);
@@ -1490,8 +1480,7 @@ void show_restore_dialog(HWND parent, const std::wstring& watch_path,
     SetForegroundWindow(dlg);
     MSG msg;
     while (IsWindow(dlg) && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (msg.message == WM_KEYDOWN && msg.wParam == 'G' &&
-            (GetKeyState(VK_CONTROL) & 0x8000)) {
+        if (msg.message == WM_KEYDOWN && msg.wParam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) {
             restore_goto_line(dlg, &st);
             continue;
         }

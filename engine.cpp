@@ -166,7 +166,7 @@ void cleanup_stale_lock(const fs::path& git_dir, const log_fn& log) {
     }
 }
 
-const std::vector<std::string>& _default_preset() {
+const std::vector<std::string>& default_preset() {
     for (auto& [name, pats] : g_presets)
         if (name == "General")
             return pats;
@@ -212,7 +212,7 @@ std::tuple<int, int, int> git_version() {
 // watch_engine
 // ---------------------------------------------------------------------------
 
-std::wstring watch_engine::_shadow_name(const std::wstring& watch_path) {
+std::wstring watch_engine::shadow_name(const std::wstring& watch_path) {
     std::wstring result;
     for (wchar_t c : watch_path)
         if (iswalnum(c))
@@ -230,113 +230,113 @@ watch_engine::watch_engine(
     log_fn log,
     const std::vector<std::string>& initial_patterns,
     bool skip_binary)
-    : _watch_path(fs::absolute(fs::path(watch_path)).wstring())
-    , _shadow_path((fs::path(shadows_base) / _shadow_name(watch_path)).wstring())
-    , _log(std::move(log))
-    , _ignore(fs::path(_shadow_path) / "ignore")
-    , _skip_binary(skip_binary) {
+    : watch_path_(fs::absolute(fs::path(watch_path)).wstring()),
+      shadow_path_((fs::path(shadows_base) / shadow_name(watch_path)).wstring()), log_(std::move(log)),
+      ignore_(fs::path(shadow_path_) / "ignore"), skip_binary_(skip_binary) {
     std::error_code ec;
-    fs::create_directories(_shadow_path, ec);
-    fs::path ignore_file = fs::path(_shadow_path) / "ignore";
+    fs::create_directories(shadow_path_, ec);
+    fs::path ignore_file = fs::path(shadow_path_) / "ignore";
     if (!fs::exists(ignore_file)) {
-        const std::vector<std::string>& pats = initial_patterns.empty() ? _default_preset() : initial_patterns;
-        _ignore.set_patterns(pats);
+        const std::vector<std::string>& pats = initial_patterns.empty() ? default_preset() : initial_patterns;
+        ignore_.set_patterns(pats);
     }
 }
 
 watch_engine::~watch_engine() {
     stop();
-    if (_stop_event)
-        CloseHandle(_stop_event);
+    if (stop_event_)
+        CloseHandle(stop_event_);
 }
 
 void watch_engine::start() {
-    if (_running)
+    if (running_)
         return;
-    _running = true;
-    _paused = false;
-    if (!_stop_event)
-        _stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    ResetEvent(_stop_event);
+    running_ = true;
+    paused_ = false;
+    if (!stop_event_)
+        stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ResetEvent(stop_event_);
     // clang-format off
-    _thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
-        static_cast<watch_engine*>(p)->_thread_proc();
+    thread_ = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+        static_cast<watch_engine*>(p)->thread_proc();
         return 0;
     }, this, 0, nullptr);
     // clang-format on
 }
 
 void watch_engine::stop() {
-    if (!_running)
+    if (!running_)
         return;
-    if (_stop_event)
-        SetEvent(_stop_event);
-    if (_thread) {
-        WaitForSingleObject(_thread, INFINITE);
-        CloseHandle(_thread);
-        _thread = nullptr;
+    if (stop_event_)
+        SetEvent(stop_event_);
+    if (thread_) {
+        WaitForSingleObject(thread_, INFINITE);
+        CloseHandle(thread_);
+        thread_ = nullptr;
     }
-    _running = false;
-    _paused = false;
-    _log("Stopped: " + path_utf8(_watch_path));
+    running_ = false;
+    paused_ = false;
+    log_("Stopped: " + path_utf8(watch_path_));
 }
 
 void watch_engine::pause() {
-    if (!_running || _paused)
+    if (!running_ || paused_)
         return;
-    if (_stop_event)
-        SetEvent(_stop_event);
-    if (_thread) {
-        WaitForSingleObject(_thread, INFINITE);
-        CloseHandle(_thread);
-        _thread = nullptr;
+    if (stop_event_)
+        SetEvent(stop_event_);
+    if (thread_) {
+        WaitForSingleObject(thread_, INFINITE);
+        CloseHandle(thread_);
+        thread_ = nullptr;
     }
-    _paused = true;
-    _log("Paused: " + path_utf8(_watch_path));
+    paused_ = true;
+    log_("Paused: " + path_utf8(watch_path_));
 }
 
 void watch_engine::resume() {
-    if (!_running || !_paused)
+    if (!running_ || !paused_)
         return;
-    _paused = false;
-    ResetEvent(_stop_event);
+    paused_ = false;
+    ResetEvent(stop_event_);
     // clang-format off
-    _thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
-        static_cast<watch_engine*>(p)->_thread_proc();
+    thread_ = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+        static_cast<watch_engine*>(p)->thread_proc();
         return 0;
     }, this, 0, nullptr);
     // clang-format on
-    _log("Resumed: " + path_utf8(_watch_path));
+    log_("Resumed: " + path_utf8(watch_path_));
 }
 
 void watch_engine::sync_exclude() {
-    fs::path exclude = fs::path(_shadow_path) / ".git" / "info" / "exclude";
+    fs::path exclude = fs::path(shadow_path_) / ".git" / "info" / "exclude";
     std::error_code ec;
     fs::create_directories(exclude.parent_path(), ec);
     if (ec) {
-        _log("ERROR: cannot create exclude dir: " + ec.message());
+        log_("ERROR: cannot create exclude dir: " + ec.message());
         return;
     }
     {
         std::ofstream out(exclude, std::ios::binary);
         if (!out) {
-            _log("ERROR: cannot open exclude file: " + path_utf8(exclude));
+            log_("ERROR: cannot open exclude file: " + path_utf8(exclude));
             return;
         }
         for (auto& a : always_ignored)
             out << a << '\n';
-        std::ifstream in(_ignore.file(), std::ios::binary);
-        if (in) out << in.rdbuf();
-        else _log("WARNING: ignore file not found: " + path_utf8(_ignore.file()));
-        for (auto& r : _nested_roots)
+        std::ifstream in(ignore_.file(), std::ios::binary);
+        if (in)
+            out << in.rdbuf();
+        else
+            log_("WARNING: ignore file not found: " + path_utf8(ignore_.file()));
+        for (auto& r : nested_roots_)
             out << r << "/\n";
     }
 }
 
-std::string watch_engine::_git(const std::vector<std::string>& args, bool check, DWORD timeout_ms) {
+std::string watch_engine::git(const std::vector<std::string>& args, bool check, DWORD timeout_ms) {
     std::vector<std::string> full;
-    full.push_back("--git-dir=" + path_utf8(fs::path(_shadow_path) / ".git"));
-    full.push_back("--work-tree=" + path_utf8(_watch_path));
+    full.push_back("--git-dir=" + path_utf8(fs::path(shadow_path_) / ".git"));
+    full.push_back("--work-tree=" + path_utf8(watch_path_));
     full.insert(full.end(), args.begin(), args.end());
     auto r = git_exec(full, timeout_ms);
     if (check && r.code != 0) {
@@ -346,16 +346,16 @@ std::string watch_engine::_git(const std::vector<std::string>& args, bool check,
     return r.out;
 }
 
-void watch_engine::_apply_perf_config() {
-    _git({ "config", "feature.manyFiles", "true" });
-    _git({ "config", "index.version", "4" });
-    _git({ "config", "core.untrackedCache", "true" });
+void watch_engine::apply_perf_config() {
+    git({ "config", "feature.manyFiles", "true" });
+    git({ "config", "index.version", "4" });
+    git({ "config", "core.untrackedCache", "true" });
     auto [maj, min, pat] = git_version();
     if (maj > 2 || (maj == 2 && min >= 37)) {
-        _git({ "config", "core.fsmonitor", "true" });
-        _log("Performance: large-repo settings enabled");
+        git({ "config", "core.fsmonitor", "true" });
+        log_("Performance: large-repo settings enabled");
     } else {
-        _log(
+        log_(
             "Performance: large-repo settings enabled (fsmonitor skipped - Git " + std::to_string(maj) + "." +
             std::to_string(min) + " < 2.37)");
     }
@@ -367,36 +367,36 @@ void watch_engine::_apply_perf_config() {
 
 // Scan one level deep for directories that contain a .git entry (could be a
 // directory or a file, e.g. worktrees).  Must be called before `git add -A`.
-void watch_engine::_discover_nested_repos() {
+void watch_engine::discover_nested_repos() {
     std::error_code ec;
-    for (auto& entry : fs::directory_iterator(_watch_path, ec)) {
+    for (auto& entry : fs::directory_iterator(watch_path_, ec)) {
         if (ec)
             break;
         if (!entry.is_directory(ec))
             continue;
         if (!fs::exists(entry.path() / ".git", ec))
             continue;
-        std::wstring relw = fs::relative(entry.path(), _watch_path, ec).wstring();
+        std::wstring relw = fs::relative(entry.path(), watch_path_, ec).wstring();
         std::replace(relw.begin(), relw.end(), L'\\', L'/');
         if (relw == L"." || relw.empty())
             continue;
         std::string key = wtoa(relw);
-        if (std::find(_nested_roots.begin(), _nested_roots.end(), key) == _nested_roots.end())
-            _nested_roots.push_back(key);
+        if (std::find(nested_roots_.begin(), nested_roots_.end(), key) == nested_roots_.end())
+            nested_roots_.push_back(key);
     }
 }
 
 // Stage files from every known nested repo so they are backed up as plain
 // files (not gitlinks).
-void watch_engine::_stage_all_nested_repos() {
-    for (auto& r : _nested_roots)
-        _stage_nested_repo(r);
+void watch_engine::stage_all_nested_repos() {
+    for (auto& r : nested_roots_)
+        stage_nested_repo(r);
 }
 
 // Catch any new gitlinks that `git add` created despite our exclude rules.
-// This is a safety net — _discover_nested_repos should prevent them.
-void watch_engine::_absorb_new_gitlinks() {
-    std::string out = _git({ "diff", "--cached", "--raw" }, false);
+// This is a safety net — discover_nested_repos should prevent them.
+void watch_engine::absorb_new_gitlinks() {
+    std::string out = git({ "diff", "--cached", "--raw" }, false);
     std::vector<std::string> roots;
     for (auto& line : split_lines(out)) {
         if (line.empty() || line[0] != ':')
@@ -410,17 +410,17 @@ void watch_engine::_absorb_new_gitlinks() {
         if (new_mode != "160000")
             continue;
         std::string path = line.substr(tab + 1);
-        if (std::find(_nested_roots.begin(), _nested_roots.end(), path) == _nested_roots.end()) {
-            _nested_roots.push_back(path);
-            _git({ "rm", "--cached", "--quiet", "-r", "--ignore-unmatch", "--", path }, false);
+        if (std::find(nested_roots_.begin(), nested_roots_.end(), path) == nested_roots_.end()) {
+            nested_roots_.push_back(path);
+            git({ "rm", "--cached", "--quiet", "-r", "--ignore-unmatch", "--", path }, false);
             sync_exclude();
-            _stage_nested_repo(path);
+            stage_nested_repo(path);
         }
     }
 }
 
-bool watch_engine::_is_under_nested(const std::string& posix) const {
-    for (auto& r : _nested_roots) {
+bool watch_engine::is_under_nested(const std::string& posix) const {
+    for (auto& r : nested_roots_) {
         if (posix == r)
             return true;
         if (posix.size() > r.size() && posix.compare(0, r.size(), r) == 0 && posix[r.size()] == '/')
@@ -429,8 +429,8 @@ bool watch_engine::_is_under_nested(const std::string& posix) const {
     return false;
 }
 
-bool watch_engine::_is_binary_file(const std::string& rel_path) const {
-    fs::path abs = fs::path(_watch_path) / fs::path(atow(rel_path));
+bool watch_engine::is_binary_file(const std::string& rel_path) const {
+    fs::path abs = fs::path(watch_path_) / fs::path(atow(rel_path));
     std::error_code ec;
     if (!fs::is_regular_file(abs, ec))
         return false;
@@ -446,27 +446,27 @@ bool watch_engine::_is_binary_file(const std::string& rel_path) const {
     return false;
 }
 
-void watch_engine::_unstage_binaries() {
-    std::string staged = _git({ "diff", "--cached", "--name-only" }, false);
+void watch_engine::unstage_binaries() {
+    std::string staged = git({ "diff", "--cached", "--name-only" }, false);
     std::vector<std::string> bins;
     for (auto& line : split_lines(staged)) {
         std::string f = trim(line);
-        if (!f.empty() && _is_binary_file(f))
+        if (!f.empty() && is_binary_file(f))
             bins.push_back(f);
     }
     if (!bins.empty()) {
-        _log("Skipping " + std::to_string(bins.size()) + " binary file(s)");
-        _remove_paths(bins);
+        log_("Skipping " + std::to_string(bins.size()) + " binary file(s)");
+        remove_paths(bins);
     }
 }
 
 // Stage files directly into the index (git hashes them). Bypasses `git add`'s
 // submodule detection, so files inside a nested repo go in as plain files.
-void watch_engine::_stage_files(const std::vector<std::string>& add_posix) {
+void watch_engine::stage_files(const std::vector<std::string>& add_posix) {
     if (add_posix.empty())
         return;
-    std::string gd = "--git-dir=" + path_utf8(fs::path(_shadow_path) / ".git");
-    std::string wt = "--work-tree=" + path_utf8(_watch_path);
+    std::string gd = "--git-dir=" + path_utf8(fs::path(shadow_path_) / ".git");
+    std::string wt = "--work-tree=" + path_utf8(watch_path_);
     const size_t batch = 100;
     for (size_t i = 0; i < add_posix.size(); i += batch) {
         size_t end = i + batch;
@@ -475,17 +475,17 @@ void watch_engine::_stage_files(const std::vector<std::string>& add_posix) {
         std::vector<std::string> args = { gd, wt, "update-index", "--add", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(add_posix[j]);
-        auto r = git_exec(args, 60000, _watch_path.c_str());
+        auto r = git_exec(args, 60000, watch_path_.c_str());
         if (r.code != 0 && !trim(r.err).empty())
-            _log("update-index: " + trim(r.err));
+            log_("update-index: " + trim(r.err));
     }
 }
 
-void watch_engine::_remove_paths(const std::vector<std::string>& del_posix) {
+void watch_engine::remove_paths(const std::vector<std::string>& del_posix) {
     if (del_posix.empty())
         return;
-    std::string gd = "--git-dir=" + path_utf8(fs::path(_shadow_path) / ".git");
-    std::string wt = "--work-tree=" + path_utf8(_watch_path);
+    std::string gd = "--git-dir=" + path_utf8(fs::path(shadow_path_) / ".git");
+    std::string wt = "--work-tree=" + path_utf8(watch_path_);
     const size_t batch = 100;
     for (size_t i = 0; i < del_posix.size(); i += batch) {
         size_t end = i + batch;
@@ -494,15 +494,15 @@ void watch_engine::_remove_paths(const std::vector<std::string>& del_posix) {
         std::vector<std::string> args = { gd, wt, "rm", "-r", "--cached", "--ignore-unmatch", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(del_posix[j]);
-        git_exec(args, 60000, _watch_path.c_str());
+        git_exec(args, 60000, watch_path_.c_str());
     }
 }
 
 // Walk a nested repo and stage every file (skipping .git at any depth).
-void watch_engine::_stage_nested_repo(const std::string& root_posix) {
-    fs::path abs_root = fs::path(_watch_path) / fs::path(atow(root_posix));
+void watch_engine::stage_nested_repo(const std::string& root_posix) {
+    fs::path abs_root = fs::path(watch_path_) / fs::path(atow(root_posix));
     std::vector<std::string> adds;
-    auto pts = _ignore.patterns();
+    auto pts = ignore_.patterns();
     std::error_code ec;
     fs::recursive_directory_iterator it(abs_root, fs::directory_options::skip_permission_denied, ec), end;
     for (; it != end; it.increment(ec)) {
@@ -515,38 +515,38 @@ void watch_engine::_stage_nested_repo(const std::string& root_posix) {
         }
         if (!it->is_regular_file(ec))
             continue;
-        std::wstring relw = fs::relative(it->path(), _watch_path, ec).wstring();
+        std::wstring relw = fs::relative(it->path(), watch_path_, ec).wstring();
         std::string rel = wtoa(relw);
-        if (_ignore.is_ignored(rel))
+        if (ignore_.is_ignored(rel))
             continue;
         std::replace(rel.begin(), rel.end(), '\\', '/');
-        if (_skip_binary && _is_binary_file(rel))
+        if (skip_binary_ && is_binary_file(rel))
             continue;
         adds.push_back(rel);
     }
-    _stage_files(adds);
+    stage_files(adds);
 }
 
-void watch_engine::_init_shadow_repo() {
-    fs::path shadow = _shadow_path;
+void watch_engine::init_shadow_repo() {
+    fs::path shadow = shadow_path_;
     fs::path git_dir = shadow / ".git";
-    cleanup_stale_lock(git_dir, _log);
+    cleanup_stale_lock(git_dir, log_);
 
     if (fs::exists(git_dir)) {
-        _discover_nested_repos();
+        discover_nested_repos();
         sync_exclude();
-        _apply_perf_config();
-        _git({ "add", "-A" });
-        _absorb_new_gitlinks();
-        _stage_all_nested_repos();
-        if (_skip_binary)
-            _unstage_binaries();
-        std::string staged = _git({ "diff", "--cached", "--name-status" }, false);
+        apply_perf_config();
+        git({ "add", "-A" });
+        absorb_new_gitlinks();
+        stage_all_nested_repos();
+        if (skip_binary_)
+            unstage_binaries();
+        std::string staged = git({ "diff", "--cached", "--name-status" }, false);
         if (!trim(staged).empty()) {
             auto lines = split_lines(trim(staged));
-            _log("Catching up " + std::to_string(lines.size()) + " file(s)...");
-            _git({ "commit", "-m", "BaconSaver " + now_ts() + " (catch-up)" });
-            _log("Catch-up commit done.");
+            log_("Catching up " + std::to_string(lines.size()) + " file(s)...");
+            git({ "commit", "-m", "BaconSaver " + now_ts() + " (catch-up)" });
+            log_("Catch-up commit done.");
         }
         return;
     }
@@ -557,99 +557,99 @@ void watch_engine::_init_shadow_repo() {
     if (init.code != 0)
         throw std::runtime_error("git init failed:\n" + init.err);
 
-    _git({ "config", "user.name", "BaconSaver" });
-    _git({ "config", "user.email", "baconsaver@local" });
-    _git({ "config", "core.autocrlf", "false" });
-    _git({ "config", "core.worktree", path_utf8(_watch_path) });
-    _apply_perf_config();
-    _discover_nested_repos();
+    git({ "config", "user.name", "BaconSaver" });
+    git({ "config", "user.email", "baconsaver@local" });
+    git({ "config", "core.autocrlf", "false" });
+    git({ "config", "core.worktree", path_utf8(watch_path_) });
+    apply_perf_config();
+    discover_nested_repos();
     sync_exclude();
 
-    _log("Initialized shadow repo: " + path_utf8(git_dir));
-    _log("Taking initial snapshot...");
-    _git({ "add", "-A" });
-    _absorb_new_gitlinks();
-    _stage_all_nested_repos();
-    if (_skip_binary)
-        _unstage_binaries();
-    std::string staged = _git({ "diff", "--cached", "--name-status" }, false);
+    log_("Initialized shadow repo: " + path_utf8(git_dir));
+    log_("Taking initial snapshot...");
+    git({ "add", "-A" });
+    absorb_new_gitlinks();
+    stage_all_nested_repos();
+    if (skip_binary_)
+        unstage_binaries();
+    std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (!trim(staged).empty()) {
-        _git({ "commit", "-m", "BaconSaver: initial snapshot" });
-        _log("Initial snapshot committed.");
+        git({ "commit", "-m", "BaconSaver: initial snapshot" });
+        log_("Initial snapshot committed.");
     } else {
-        _log("Nothing to snapshot.");
+        log_("Nothing to snapshot.");
     }
 }
 
-void watch_engine::_commit() {
-    fs::path git_dir = fs::path(_shadow_path) / ".git";
-    cleanup_stale_lock(git_dir, _log);
+void watch_engine::commit() {
+    fs::path git_dir = fs::path(shadow_path_) / ".git";
+    cleanup_stale_lock(git_dir, log_);
 
-    std::vector<std::string> pending(_pending.begin(), _pending.end());
-    _pending.clear();
-    bool overflow = _overflow;
-    _overflow = false;
+    std::vector<std::string> pending(pending_.begin(), pending_.end());
+    pending_.clear();
+    bool overflow = overflow_;
+    overflow_ = false;
 
-    _discover_nested_repos();
+    discover_nested_repos();
     sync_exclude();
-    _git({ "add", "-A" });
-    _absorb_new_gitlinks();
-    if (_skip_binary)
-        _unstage_binaries();
+    git({ "add", "-A" });
+    absorb_new_gitlinks();
+    if (skip_binary_)
+        unstage_binaries();
 
-    std::string chk = _git({ "diff", "--cached", "--name-only" }, false);
+    std::string chk = git({ "diff", "--cached", "--name-only" }, false);
     for (auto& line : split_lines(chk))
         if (line.find("__pycache__") != std::string::npos || line.find(".pyc") != std::string::npos)
-            _log("TRACE git-staged: " + trim(line));
+            log_("TRACE git-staged: " + trim(line));
 
     if (overflow) {
         // Lost the change list — re-stage every nested repo to be safe.
-        for (auto& r : _nested_roots)
-            _stage_nested_repo(r);
+        for (auto& r : nested_roots_)
+            stage_nested_repo(r);
     } else {
         std::vector<std::string> adds, dels;
         for (auto& p : pending) {
-            if (!_is_under_nested(p))
+            if (!is_under_nested(p))
                 continue; // handled by `git add -A`
-            fs::path abs = fs::path(_watch_path) / fs::path(atow(p));
+            fs::path abs = fs::path(watch_path_) / fs::path(atow(p));
             std::error_code ec;
             if (fs::is_regular_file(abs, ec))
                 adds.push_back(p);
             else
                 dels.push_back(p);
         }
-        _stage_files(adds);
-        _remove_paths(dels);
+        stage_files(adds);
+        remove_paths(dels);
     }
 
-    std::string staged = _git({ "diff", "--cached", "--name-status" }, false);
+    std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (trim(staged).empty())
         return;
     auto lines = split_lines(trim(staged));
     for (auto& line : lines)
-        _log("  " + trim(line));
+        log_("  " + trim(line));
     std::string ts = now_ts();
-    _git({ "commit", "-m", "BaconSaver " + ts });
-    _log("[" + ts + "] Committed " + std::to_string(lines.size()) + " file(s).");
+    git({ "commit", "-m", "BaconSaver " + ts });
+    log_("[" + ts + "] Committed " + std::to_string(lines.size()) + " file(s).");
 }
 
-void watch_engine::_thread_proc() {
+void watch_engine::thread_proc() {
     try {
-        _init_shadow_repo();
+        init_shadow_repo();
     } catch (const std::exception& e) {
-        _log(std::string("ERROR: ") + e.what());
-        _running = false;
-        _paused = false;
+        log_(std::string("ERROR: ") + e.what());
+        running_ = false;
+        paused_ = false;
         return;
     }
     sync_exclude();
 
     HANDLE dir = CreateFileW(
-        _watch_path.c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        watch_path_.c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
     if (dir == INVALID_HANDLE_VALUE) {
-        _log("ERROR: cannot open directory for watching: " + path_utf8(_watch_path));
-        _running = false;
+        log_("ERROR: cannot open directory for watching: " + path_utf8(watch_path_));
+        running_ = false;
         return;
     }
 
@@ -665,14 +665,14 @@ void watch_engine::_thread_proc() {
         ReadDirectoryChangesW(dir, buf.data(), (DWORD)buf.size(), TRUE, notify_flags, &br, &ov, nullptr);
     };
 
-    _log("Watching: " + path_utf8(_watch_path));
+    log_("Watching: " + path_utf8(watch_path_));
     arm();
 
     ULONGLONG last_change = 0;
-    HANDLE waits[2] = { _stop_event, ov.hEvent };
+    HANDLE waits[2] = { stop_event_, ov.hEvent };
 
     for (;;) {
-        bool have = !_pending.empty() || _overflow;
+        bool have = !pending_.empty() || overflow_;
         DWORD timeout = INFINITE;
         if (have) {
             ULONGLONG elapsed = GetTickCount64() - last_change;
@@ -689,7 +689,7 @@ void watch_engine::_thread_proc() {
             if (GetOverlappedResult(dir, &ov, &br, FALSE)) {
                 if (br == 0) {
                     // Buffer overflow — too many changes to enumerate. Re-scan everything.
-                    _overflow = true;
+                    overflow_ = true;
                     last_change = GetTickCount64();
                 } else {
                     BYTE* p = buf.data();
@@ -697,9 +697,9 @@ void watch_engine::_thread_proc() {
                         auto fni = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
                         std::wstring name(fni->FileName, fni->FileNameLength / sizeof(WCHAR));
                         std::string rel = wtoa(name);
-                        if (!_ignore.is_ignored(rel)) {
+                        if (!ignore_.is_ignored(rel)) {
                             std::replace(rel.begin(), rel.end(), '\\', '/');
-                            _pending.insert(rel);
+                            pending_.insert(rel);
                             last_change = GetTickCount64();
                         }
                         if (fni->NextEntryOffset == 0)
@@ -712,16 +712,16 @@ void watch_engine::_thread_proc() {
             continue;
         }
         if (w == WAIT_TIMEOUT) {
-            if (!_pending.empty() || _overflow) {
+            if (!pending_.empty() || overflow_) {
                 try {
-                    _commit();
+                    commit();
                 } catch (const std::exception& e) {
-                    _log(std::string("Commit failed: ") + e.what());
+                    log_(std::string("Commit failed: ") + e.what());
                 }
             }
             continue;
         }
-        _log("ERROR: watch wait failed");
+        log_("ERROR: watch wait failed");
         break;
     }
 

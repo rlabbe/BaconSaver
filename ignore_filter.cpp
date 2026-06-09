@@ -1,27 +1,23 @@
 #include "ignore_filter.h"
 #include <Shlwapi.h>
-#include <fstream>
 #include <algorithm>
+#include <fstream>
 
 #pragma comment(lib, "shlwapi.lib")
 
-inline const std::vector<std::string> always_ignored = {".git"};
+inline const std::vector<std::string> always_ignored = { ".git" };
 
-IgnoreFilter::IgnoreFilter(const fs::path& pattern_file)
-    : _file(pattern_file)
-{
+IgnoreFilter::IgnoreFilter(const fs::path& pattern_file) : _file(pattern_file) {
     reload();
 }
 
-std::vector<std::string> IgnoreFilter::patterns() const
-{
+std::vector<std::string> IgnoreFilter::patterns() const {
     auto result = _component_patterns;
     result.insert(result.end(), _path_patterns.begin(), _path_patterns.end());
     return result;
 }
 
-void IgnoreFilter::reload()
-{
+void IgnoreFilter::reload() {
     _component_patterns.clear();
     _path_patterns.clear();
     if (!fs::exists(_file))
@@ -44,8 +40,7 @@ void IgnoreFilter::reload()
     }
 }
 
-void IgnoreFilter::set_patterns(const std::vector<std::string>& patterns)
-{
+void IgnoreFilter::set_patterns(const std::vector<std::string>& patterns) {
     {
         std::ofstream out(_file);
         out << "# BaconSaver ignore patterns\n";
@@ -57,8 +52,7 @@ void IgnoreFilter::set_patterns(const std::vector<std::string>& patterns)
     reload();
 }
 
-bool IgnoreFilter::is_ignored(const std::string& rel_path) const
-{
+bool IgnoreFilter::is_ignored(const std::string& rel_path) const {
     auto norm = fs::path(rel_path);
     for (auto part_it = norm.begin(); part_it != norm.end(); ++part_it)
         for (auto& always : always_ignored)
@@ -80,14 +74,14 @@ bool IgnoreFilter::is_ignored(const std::string& rel_path) const
     return false;
 }
 
-bool IgnoreFilter::_fnmatch(const std::string& pattern, const std::string& str)
-{
+bool IgnoreFilter::_fnmatch(const std::string& pattern, const std::string& str) {
     if (pattern.find('[') != std::string::npos)
         return PathMatchSpecA(str.c_str(), pattern.c_str());
     size_t pi = 0, si = 0, pstar = std::string::npos, sstar = 0;
     while (si < str.size()) {
         if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == str[si])) {
-            ++pi; ++si;
+            ++pi;
+            ++si;
         } else if (pi < pattern.size() && pattern[pi] == '*') {
             pstar = pi++;
             sstar = si;

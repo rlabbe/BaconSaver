@@ -21,8 +21,8 @@ AlignAfterOpenBracket: AlwaysBreak
 BinPackArguments: true
 BinPackParameters: false
 
-# Constructor initializers: ) : then one per line, comma before member
-BreakConstructorInitializers: BeforeComma
+# Constructor initializers: only break when they don't fit on one line
+BreakConstructorInitializers: BeforeColon
 
 # Single-statement bodies: remove unnecessary braces (clang-format >= 15)
 RemoveBracesLLVM: true

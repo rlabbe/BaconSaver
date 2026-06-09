@@ -30,49 +30,49 @@ public:
     void pause();
     void resume();
 
-    bool is_running() const { return _running; }
-    bool is_paused() const { return _paused; }
-    const std::wstring& watch_path() const { return _watch_path; }
-    const std::wstring& shadow_path() const { return _shadow_path; }
-    IgnoreFilter& ignore() { return _ignore; }
+    bool is_running() const { return running_; }
+    bool is_paused() const { return paused_; }
+    const std::wstring& watch_path() const { return watch_path_; }
+    const std::wstring& shadow_path() const { return shadow_path_; }
+    IgnoreFilter& ignore() { return ignore_; }
 
     void sync_exclude();
 
 private:
-    std::wstring _watch_path;
-    std::wstring _shadow_path;
-    log_fn _log;
-    IgnoreFilter _ignore;
-    HANDLE _thread = nullptr;
-    HANDLE _stop_event = nullptr;
-    std::atomic<bool> _running{ false };
-    std::atomic<bool> _paused{ false };
-    bool _skip_binary = false;
+    std::wstring watch_path_;
+    std::wstring shadow_path_;
+    log_fn log_;
+    IgnoreFilter ignore_;
+    HANDLE thread_ = nullptr;
+    HANDLE stop_event_ = nullptr;
+    std::atomic<bool> running_{ false };
+    std::atomic<bool> paused_{ false };
+    bool skip_binary_ = false;
 
     // Directories that contain their own .git. Git would treat these as
     // submodules; instead we record their roots, exclude them from `git add`,
     // and stage their files directly so they are backed up as plain files.
-    std::vector<std::string> _nested_roots;
-    std::set<std::string> _pending; // changed paths (POSIX, relative) since last commit
-    bool _overflow = false;         // watcher buffer overflowed; re-scan nested repos
+    std::vector<std::string> nested_roots_;
+    std::set<std::string> pending_; // changed paths (POSIX, relative) since last commit
+    bool overflow_ = false;         // watcher buffer overflowed; re-scan nested repos
 
-    void _thread_proc();
-    void _init_shadow_repo();
-    void _apply_perf_config();
-    void _commit();
-    std::string _git(const std::vector<std::string>& args, bool check = true, DWORD timeout_ms = 30000);
+    void thread_proc();
+    void init_shadow_repo();
+    void apply_perf_config();
+    void commit();
+    std::string git(const std::vector<std::string>& args, bool check = true, DWORD timeout_ms = 30000);
 
-    void _discover_nested_repos();
-    void _stage_all_nested_repos();
-    void _absorb_new_gitlinks();
-    void _stage_nested_repo(const std::string& root_posix);
-    void _stage_files(const std::vector<std::string>& add_posix);
-    void _remove_paths(const std::vector<std::string>& del_posix);
-    bool _is_under_nested(const std::string& posix) const;
-    bool _is_binary_file(const std::string& rel_path) const;
-    void _unstage_binaries();
+    void discover_nested_repos();
+    void stage_all_nested_repos();
+    void absorb_new_gitlinks();
+    void stage_nested_repo(const std::string& root_posix);
+    void stage_files(const std::vector<std::string>& add_posix);
+    void remove_paths(const std::vector<std::string>& del_posix);
+    bool is_under_nested(const std::string& posix) const;
+    bool is_binary_file(const std::string& rel_path) const;
+    void unstage_binaries();
 
-    static std::wstring _shadow_name(const std::wstring& watch_path);
+    static std::wstring shadow_name(const std::wstring& watch_path);
 };
 
 struct commit_entry {
