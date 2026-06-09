@@ -232,11 +232,13 @@ LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
         st = reinterpret_cast<input_state*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
-        make(L"STATIC", st->prompt.c_str(), 0, 12, 12, 340, 18, hwnd, -1);
+        auto s = [=](int px) { return scale_px(px, hwnd); };
+        make(L"STATIC", st->prompt.c_str(), 0, s(12), s(12), s(340), s(18), hwnd, -1);
         st->edit = make(
-            L"EDIT", st->text.c_str(), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 12, 34, 340, 24, hwnd, ID_SIMPLE_TEXT);
-        make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 178, 70, 80, 26, hwnd, IDOK);
-        make(L"BUTTON", L"Cancel", WS_TABSTOP, 272, 70, 80, 26, hwnd, IDCANCEL);
+            L"EDIT", st->text.c_str(), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, s(12), s(34), s(340), s(24), hwnd,
+            ID_SIMPLE_TEXT);
+        make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, s(178), s(70), s(80), s(26), hwnd, IDOK);
+        make(L"BUTTON", L"Cancel", WS_TABSTOP, s(272), s(70), s(80), s(26), hwnd, IDCANCEL);
         SetFocus(st->edit);
         SendMessageW(st->edit, EM_SETSEL, 0, -1);
         return 0;
@@ -280,8 +282,9 @@ bool show_text_input(HWND parent, const std::wstring& title, const std::wstring&
     RECT pr;
     GetWindowRect(parent, &pr);
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    SIZE ws = window_size_for_client(364, 112, style, WS_EX_DLGMODALFRAME);
-    int x = pr.left + 60, y = pr.top + 80;
+    int cw = scale_px(364, parent), ch = scale_px(112, parent);
+    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME);
+    int x = pr.left + scale_px(60, parent), y = pr.top + scale_px(80, parent);
     HWND dlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME, L"BaconInputDlg", title.c_str(), style, x, y, ws.cx, ws.cy, parent, nullptr,
         GetModuleHandleW(nullptr), &st);
@@ -315,10 +318,11 @@ LRESULT CALLBACK view_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE: {
         RECT rc;
         GetClientRect(hwnd, &rc);
-        MoveWindow(st->edit, 4, 4, rc.right - 8, rc.bottom - 40, TRUE);
+        auto s = [=](int px) { return scale_px(px, hwnd); };
+        MoveWindow(st->edit, s(4), s(4), rc.right - s(8), rc.bottom - s(40), TRUE);
         HWND close = GetDlgItem(hwnd, IDCANCEL);
         if (close)
-            MoveWindow(close, rc.right - 92, rc.bottom - 32, 80, 26, TRUE);
+            MoveWindow(close, rc.right - s(92), rc.bottom - s(32), s(80), s(26), TRUE);
         return 0;
     }
     case WM_COMMAND:
@@ -346,12 +350,13 @@ void show_text_view(HWND parent, const std::wstring& title, const std::wstring& 
     view_state st;
     HWND dlg = CreateWindowExW(
         0, L"BaconViewDlg", title.c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 640, 460, parent, nullptr, GetModuleHandleW(nullptr), &st);
+        CW_USEDEFAULT, CW_USEDEFAULT, scale_px(640, parent), scale_px(460, parent), parent, nullptr,
+        GetModuleHandleW(nullptr), &st);
     HWND close = make(L"BUTTON", L"Close", WS_TABSTOP, 0, 0, 80, 26, dlg, IDCANCEL);
     (void)close;
     HFONT mono = CreateFontW(
-        -14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-        FIXED_PITCH | FF_MODERN, L"Consolas");
+        -scale_px(14, parent), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
     set_font(st.edit, mono);
     SetWindowTextW(st.edit, text.c_str());
     RECT rc;
@@ -491,42 +496,45 @@ LRESULT CALLBACK add_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         st = reinterpret_cast<add_state*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
 
-        make(L"STATIC", L"Directory:", 0, 12, 14, 65, 18, hwnd, -1);
-        st->dir_label = make(L"STATIC", L"<none>", SS_PATHELLIPSIS, 80, 14, 320, 18, hwnd, -1);
-        make(L"BUTTON", L"Browse...", WS_TABSTOP, 406, 10, 90, 26, hwnd, IDC_ADD_BROWSE);
+        auto s = [=](int px) { return scale_px(px, hwnd); };
 
-        make(L"STATIC", L"Presets:", 0, 12, 48, 60, 18, hwnd, -1);
-        int px = 78;
+        make(L"STATIC", L"Directory:", 0, s(12), s(14), s(65), s(18), hwnd, -1);
+        st->dir_label = make(L"STATIC", L"<none>", SS_PATHELLIPSIS, s(80), s(14), s(320), s(18), hwnd, -1);
+        make(L"BUTTON", L"Browse...", WS_TABSTOP, s(406), s(10), s(90), s(26), hwnd, IDC_ADD_BROWSE);
+
+        make(L"STATIC", L"Presets:", 0, s(12), s(48), s(60), s(18), hwnd, -1);
+        int px = s(78);
         for (size_t i = 0; i < g_presets.size(); ++i) {
             HWND cb = make(
-                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP | BS_AUTOCHECKBOX, px, 46, 90, 22, hwnd,
-                IDC_ADD_PRESET_BASE + (int)i);
+                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP | BS_AUTOCHECKBOX, px, s(46), s(90), s(22),
+                hwnd, IDC_ADD_PRESET_BASE + (int)i);
             st->preset_checks.push_back(cb);
-            px += 96;
+            px += s(96);
         }
 
-        make(L"BUTTON", L"Skip binary files", WS_TABSTOP | BS_AUTOCHECKBOX, 12, 76, 160, 22, hwnd, IDC_ADD_SKIP_BINARY);
+        make(L"BUTTON", L"Skip binary files", WS_TABSTOP | BS_AUTOCHECKBOX, s(12), s(76), s(160), s(22), hwnd,
+            IDC_ADD_SKIP_BINARY);
 
-        make(
-            L"STATIC",
-            L"Patterns without / match any path component.\r\n"
-            L"Patterns with / match the full relative path.\r\n"
-            L"Wildcards:  *  ?  [seq]",
-            0, 12, 104, 480, 52, hwnd, -1);
+        make(L"STATIC",
+             L"Patterns without / match any path component.\r\n"
+             L"Patterns with / match the full relative path.\r\n"
+             L"Wildcards:  *  ?  [seq]",
+             0, s(12), s(104), s(480), s(52), hwnd, -1);
 
         st->patterns = make(
-            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 12, 160, 484, 220, hwnd,
+            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, s(12), s(160), s(484), s(220), hwnd,
             IDC_ADD_PATTERNS);
 
-        make(L"BUTTON", L"Add...", WS_TABSTOP, 12, 388, 80, 26, hwnd, IDC_ADD_ADD);
-        make(L"BUTTON", L"Remove", WS_TABSTOP, 98, 388, 80, 26, hwnd, IDC_ADD_REMOVE);
+        make(L"BUTTON", L"Add...", WS_TABSTOP, s(12), s(388), s(80), s(26), hwnd, IDC_ADD_ADD);
+        make(L"BUTTON", L"Remove", WS_TABSTOP, s(98), s(388), s(80), s(26), hwnd, IDC_ADD_REMOVE);
 
-        st->preview_btn = make(L"BUTTON", L"Preview Files...", WS_TABSTOP, 12, 426, 130, 26, hwnd, IDC_ADD_PREVIEW);
+        st->preview_btn = make(L"BUTTON", L"Preview Files...", WS_TABSTOP, s(12), s(426), s(130), s(26), hwnd,
+                               IDC_ADD_PREVIEW);
         EnableWindow(st->preview_btn, FALSE);
 
-        st->ok_btn = make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 320, 426, 80, 26, hwnd, IDOK);
+        st->ok_btn = make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, s(320), s(426), s(80), s(26), hwnd, IDOK);
         EnableWindow(st->ok_btn, FALSE);
-        make(L"BUTTON", L"Cancel", WS_TABSTOP, 414, 426, 80, 26, hwnd, IDCANCEL);
+        make(L"BUTTON", L"Cancel", WS_TABSTOP, s(414), s(426), s(80), s(26), hwnd, IDCANCEL);
 
         // All presets checked by default
         for (size_t i = 0; i < g_presets.size(); ++i)
@@ -613,7 +621,8 @@ bool show_add_directory_dialog(
     }
     add_state st;
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    SIZE ws = window_size_for_client(512, 470, style, WS_EX_DLGMODALFRAME);
+    int cw = scale_px(512, parent), ch = scale_px(470, parent);
+    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME);
     HWND dlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME, L"BaconAddDlg", L"Add Watched Directory", style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx,
         ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
@@ -667,27 +676,27 @@ LRESULT CALLBACK ignore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         st = reinterpret_cast<ignore_state*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
 
-        make(L"STATIC", L"Add preset:", 0, 12, 14, 80, 18, hwnd, -1);
-        int px = 92;
+        auto s = [=](int px) { return scale_px(px, hwnd); };
+
+        make(L"STATIC", L"Add preset:", 0, s(12), s(14), s(80), s(18), hwnd, -1);
+        int px = s(92);
         for (size_t i = 0; i < g_presets.size(); ++i) {
-            make(
-                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP, px, 10, 90, 26, hwnd,
+            make(L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP, px, s(10), s(90), s(26), hwnd,
                 IDC_IGN_PRESET_BASE + (int)i);
-            px += 96;
+            px += s(96);
         }
-        make(
-            L"STATIC",
-            L"Patterns without / match any path component.\r\n"
-            L"Patterns with / match the full relative path.\r\n"
-            L"Wildcards:  *  ?  [seq]",
-            0, 12, 44, 430, 52, hwnd, -1);
+        make(L"STATIC",
+             L"Patterns without / match any path component.\r\n"
+             L"Patterns with / match the full relative path.\r\n"
+             L"Wildcards:  *  ?  [seq]",
+             0, s(12), s(44), s(430), s(52), hwnd, -1);
         st->patterns = make(
-            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 12, 100, 434, 230, hwnd,
+            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, s(12), s(100), s(434), s(230), hwnd,
             IDC_IGN_PATTERNS);
-        make(L"BUTTON", L"Add...", WS_TABSTOP, 12, 338, 80, 26, hwnd, IDC_IGN_ADD);
-        make(L"BUTTON", L"Remove", WS_TABSTOP, 98, 338, 80, 26, hwnd, IDC_IGN_REMOVE);
-        make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 270, 338, 80, 26, hwnd, IDOK);
-        make(L"BUTTON", L"Cancel", WS_TABSTOP, 364, 338, 80, 26, hwnd, IDCANCEL);
+        make(L"BUTTON", L"Add...", WS_TABSTOP, s(12), s(338), s(80), s(26), hwnd, IDC_IGN_ADD);
+        make(L"BUTTON", L"Remove", WS_TABSTOP, s(98), s(338), s(80), s(26), hwnd, IDC_IGN_REMOVE);
+        make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, s(270), s(338), s(80), s(26), hwnd, IDOK);
+        make(L"BUTTON", L"Cancel", WS_TABSTOP, s(364), s(338), s(80), s(26), hwnd, IDCANCEL);
         return 0;
     }
     case WM_COMMAND: {
@@ -747,7 +756,8 @@ bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current, st
     }
     ignore_state st;
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    SIZE ws = window_size_for_client(462, 380, style, WS_EX_DLGMODALFRAME);
+    int cw = scale_px(462, parent), ch = scale_px(380, parent);
+    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME);
     HWND dlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME, L"BaconIgnoreDlg", L"Edit Ignore Patterns", style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx,
         ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
@@ -1153,9 +1163,9 @@ void restore_load_font(HWND hwnd, restore_state* st) {
     st->preview_font = CreateFontIndirectW(&st->font);
 }
 
-void restore_load_size(int& w, int& h) {
-    w = 1000;
-    h = 640;
+void restore_load_size(HWND parent, int& w, int& h) {
+    w = scale_px(1000, parent);
+    h = scale_px(640, parent);
     json::value cfg;
     if (load_config(cfg)) {
         if (auto* s = cfg.find("restore_size")) {
@@ -1186,7 +1196,7 @@ void restore_layout(HWND hwnd, restore_state* st) {
     GetClientRect(hwnd, &rc);
     int W = rc.right, H = rc.bottom;
     int m = scale_px(8, hwnd);
-    int splitter_w = scale_px(6, hwnd);
+    int splitter_w = scale_px(4, hwnd);
     int bottom_h = scale_px(36, hwnd);
     int top = m;
     int body_h = H - bottom_h - m * 2;
@@ -1323,7 +1333,7 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RECT rc;
             GetClientRect(hwnd, &rc);
             int m = scale_px(8, hwnd);
-            int splitter_w = scale_px(6, hwnd);
+            int splitter_w = scale_px(4, hwnd);
             int spl_y = m + scale_px(22, hwnd);
             int spl_h = rc.bottom - scale_px(36, hwnd) - m * 2 - scale_px(22, hwnd);
             int g1_x = m + scale_px(st->splitter1_x, hwnd);
@@ -1344,7 +1354,7 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RECT rc;
             GetClientRect(hwnd, &rc);
             int m = scale_px(8, hwnd);
-            int splitter_w = scale_px(6, hwnd);
+            int splitter_w = scale_px(4, hwnd);
             int spl_y = m + scale_px(22, hwnd);
             int spl_h = rc.bottom - scale_px(36, hwnd) - m * 2 - scale_px(22, hwnd);
             int g1_x = m + scale_px(st->splitter1_x, hwnd);
@@ -1507,7 +1517,7 @@ void show_restore_dialog(HWND parent, const std::wstring& watch_path, const std:
     st.work_tree = watch_path;
 
     int w, h;
-    restore_load_size(w, h);
+    restore_load_size(parent, w, h);
     std::wstring title = L"Restore - " + watch_path;
     HWND dlg = CreateWindowExW(
         0, L"BaconRestoreDlg", title.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, w, h,

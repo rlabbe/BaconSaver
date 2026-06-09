@@ -60,6 +60,8 @@ HBRUSH g_dark_brush = nullptr;
 HFONT g_mono_font = nullptr;
 int g_splitter_x = 224;
 bool g_dragging = false;
+int g_window_w = 0;
+int g_window_h = 0;
 std::vector<std::unique_ptr<entry>> g_entries;
 std::wstring g_shadows_base;
 bool g_have_base = false;
@@ -204,6 +206,13 @@ void save_config() {
         preset_arr.arr->push_back(po);
     }
     cfg.set("presets", preset_arr);
+    if (g_window_w && g_window_h) {
+        json::value sz = json::value::make_array();
+        sz.arr->push_back(json::value(g_window_w));
+        sz.arr->push_back(json::value(g_window_h));
+        cfg.set("main_size", sz);
+    }
+    cfg.set("splitter_x", json::value(g_splitter_x));
     std::ofstream out(config_path(), std::ios::binary);
     out << json::dump(cfg, 2);
 }
@@ -516,7 +525,7 @@ void layout(HWND hwnd) {
     int m = scale_px(8, hwnd);
     int sh = scale_px(22, hwnd);
     int lbl_h = scale_px(18, hwnd);
-    int splitter_w = scale_px(6, hwnd);
+    int splitter_w = scale_px(4, hwnd);
     int btn_h = scale_px(28, hwnd);
     int btn_gap = scale_px(4, hwnd);
     int left_w = scale_px(g_splitter_x, hwnd);
@@ -607,6 +616,13 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
+        if (wp == SIZE_RESTORED) {
+            RECT r;
+            if (GetWindowRect(hwnd, &r)) {
+                g_window_w = r.right - r.left;
+                g_window_h = r.bottom - r.top;
+            }
+        }
         layout(hwnd);
         return 0;
     case WM_SETCURSOR: {
@@ -615,7 +631,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int m = scale_px(8, hwnd);
         int sh = scale_px(22, hwnd);
         int lbl_h = scale_px(18, hwnd);
-        int splitter_w = scale_px(6, hwnd);
+        int splitter_w = scale_px(4, hwnd);
         int left_w = scale_px(g_splitter_x, hwnd);
         int gutter_x = m + left_w;
         int body_top = m + lbl_h;
@@ -635,7 +651,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int m = scale_px(8, hwnd);
         int sh = scale_px(22, hwnd);
         int lbl_h = scale_px(18, hwnd);
-        int splitter_w = scale_px(6, hwnd);
+        int splitter_w = scale_px(4, hwnd);
         int left_w = scale_px(g_splitter_x, hwnd);
         int gutter_x = m + left_w;
         int body_top = m + lbl_h;
@@ -750,6 +766,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         quit_app(hwnd);
         return 0;
     case WM_DESTROY:
+        save_config();
         if (g_mono_font)
             DeleteObject(g_mono_font);
         return 0;
@@ -788,8 +805,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     wc.hIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(101), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
     RegisterClassW(&wc);
 
+    // Restore saved window size and splitter before creating window
+    int main_w = MulDiv(1000, GetDpiForSystem(), 96);
+    int main_h = MulDiv(600, GetDpiForSystem(), 96);
+    {
+        json::value cfg;
+        if (load_config_value(cfg)) {
+            if (auto* s = cfg.find("main_size")) {
+                if (s->is_array() && s->arr && s->arr->size() == 2) {
+                    main_w = (*s->arr)[0].as_int(main_w);
+                    main_h = (*s->arr)[1].as_int(main_h);
+                }
+            }
+            if (auto* sx = cfg.find("splitter_x"))
+                g_splitter_x = sx->as_int(g_splitter_x);
+        }
+    }
+
     HWND hwnd = CreateWindowExW(
-        0, MAIN_CLASS, L"BaconSaver", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 1000, 600,
+        0, MAIN_CLASS, L"BaconSaver", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, main_w, main_h,
         nullptr, nullptr, hInstance, nullptr);
 
     file_log("BaconSaver started");
