@@ -659,8 +659,11 @@ void watch_engine::commit() {
                 continue; // handled by `git add -A`
             fs::path abs = fs::path(watch_path_) / fs::path(atow(p));
             std::error_code ec;
-            if (fs::is_regular_file(abs, ec))
+            if (fs::is_regular_file(abs, ec)) {
+                if (skip_binary_ && is_binary_file(p))
+                    continue;
                 adds.push_back(p);
+            }
             else
                 dels.push_back(p);
         }
