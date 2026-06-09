@@ -1,13 +1,13 @@
 #pragma once
-#include <windows.h>
-#include <functional>
-#include <string>
-#include <vector>
-#include <filesystem>
-#include <atomic>
-#include <tuple>
-#include <set>
 #include "ignore_filter.h"
+#include <atomic>
+#include <filesystem>
+#include <functional>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
+#include <windows.h>
 
 namespace fs = std::filesystem;
 using log_fn = std::function<void(const std::string&)>;
@@ -17,9 +17,12 @@ extern presets_t g_presets;
 
 class watch_engine {
 public:
-    watch_engine(const std::wstring& watch_path, const std::wstring& shadows_base,
-                 log_fn log, const std::vector<std::string>& initial_patterns = {},
-                 bool skip_binary = false);
+    watch_engine(
+        const std::wstring& watch_path,
+        const std::wstring& shadows_base,
+        log_fn log,
+        const std::vector<std::string>& initial_patterns = {},
+        bool skip_binary = false);
     ~watch_engine();
 
     void start();
@@ -42,16 +45,16 @@ private:
     IgnoreFilter _ignore;
     HANDLE _thread = nullptr;
     HANDLE _stop_event = nullptr;
-    std::atomic<bool> _running{false};
-    std::atomic<bool> _paused{false};
+    std::atomic<bool> _running{ false };
+    std::atomic<bool> _paused{ false };
     bool _skip_binary = false;
 
     // Directories that contain their own .git. Git would treat these as
     // submodules; instead we record their roots, exclude them from `git add`,
     // and stage their files directly so they are backed up as plain files.
     std::vector<std::string> _nested_roots;
-    std::set<std::string> _pending;   // changed paths (POSIX, relative) since last commit
-    bool _overflow = false;           // watcher buffer overflowed; re-scan nested repos
+    std::set<std::string> _pending; // changed paths (POSIX, relative) since last commit
+    bool _overflow = false;         // watcher buffer overflowed; re-scan nested repos
 
     void _thread_proc();
     void _init_shadow_repo();
@@ -89,5 +92,10 @@ std::vector<commit_entry> get_commit_log(const fs::path& git_dir, const fs::path
 std::vector<commit_file> get_commit_files(const fs::path& git_dir, const fs::path& work_tree, const std::string& hash);
 std::string get_file_at_commit(const fs::path& git_dir, const std::string& hash, const std::string& file_path);
 std::vector<std::string> get_full_tree_at_commit(const fs::path& git_dir, const std::string& hash);
-std::string get_diff_for_commit(const fs::path& git_dir, const fs::path& work_tree, const std::string& hash, const std::string& file_path);
-std::vector<std::string> export_files(const fs::path& git_dir, const std::string& hash, const std::vector<std::string>& file_paths, const fs::path& dest_dir);
+std::string get_diff_for_commit(
+    const fs::path& git_dir, const fs::path& work_tree, const std::string& hash, const std::string& file_path);
+std::vector<std::string> export_files(
+    const fs::path& git_dir,
+    const std::string& hash,
+    const std::vector<std::string>& file_paths,
+    const fs::path& dest_dir);

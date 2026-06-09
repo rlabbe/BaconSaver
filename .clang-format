@@ -1,0 +1,44 @@
+---
+BasedOnStyle: Microsoft
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# Braces: attach to control statement, } else { on one line
+BreakBeforeBraces: Attach
+
+# No braces for single-statement if/for/while — but body on its own line
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+
+# First param on next line, one indent level, subsequent lined up under it
+AlignAfterOpenBracket: AlwaysBreak
+
+# Don't pack args/params on the same line when exceeding column limit
+BinPackArguments: true
+BinPackParameters: false
+
+# Constructor initializers: ) : then one per line, comma before member
+BreakConstructorInitializers: BeforeComma
+
+# Single-statement bodies: remove unnecessary braces (clang-format >= 15)
+RemoveBracesLLVM: true
+
+# Case labels flush with switch
+IndentCaseLabels: false
+
+# Space before ( in if/for/while/switch
+SpaceBeforeParens: ControlStatements
+
+# Braced init lists: no space inside { }
+Cpp11BracedListStyle: false
+SpaceInEmptyParentheses: false
+
+# Pointer alignment
+PointerAlignment: Left
+
+# Access modifiers at same indent as class
+AccessModifierOffset: -4

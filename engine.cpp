@@ -1,21 +1,22 @@
 #include "engine.h"
-#include <fstream>
-#include <sstream>
 #include <algorithm>
-#include <chrono>
 #include <cctype>
-#include <cwctype>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <cwctype>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 namespace {
 
-const std::vector<std::string> always_ignored = {".git"};
+const std::vector<std::string> always_ignored = { ".git" };
 constexpr DWORD debounce_ms = 3000;
 
 std::string wtoa(const std::wstring& ws) {
-    if (ws.empty()) return {};
+    if (ws.empty())
+        return {};
     int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
     std::string s(len, '\0');
     WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &s[0], len, nullptr, nullptr);
@@ -23,7 +24,8 @@ std::string wtoa(const std::wstring& ws) {
 }
 
 std::wstring atow(const std::string& s) {
-    if (s.empty()) return {};
+    if (s.empty())
+        return {};
     int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
     std::wstring ws(len, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &ws[0], len);
@@ -38,7 +40,7 @@ std::string trim(const std::string& s) {
     size_t start = 0, end = s.size();
     while (start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r' || s[start] == '\n'))
         ++start;
-    while (end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\r' || s[end-1] == '\n'))
+    while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t' || s[end - 1] == '\r' || s[end - 1] == '\n'))
         --end;
     return s.substr(start, end - start);
 }
@@ -69,7 +71,7 @@ std::wstring quote_arg(const std::wstring& arg) {
     if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos)
         return arg;
     std::wstring out = L"\"";
-    for (size_t i = 0; ; ++i) {
+    for (size_t i = 0;; ++i) {
         size_t backslashes = 0;
         while (i < arg.size() && arg[i] == L'\\') {
             ++i;
@@ -98,8 +100,7 @@ struct git_result {
 
 // Run "git <args>" capturing raw stdout/stderr bytes. Never injects --git-dir;
 // callers pass whatever flags they need. Throws only if the process cannot start.
-git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms,
-                    const wchar_t* cwd = nullptr) {
+git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, const wchar_t* cwd = nullptr) {
     std::wstring cmd = L"git";
     for (auto& a : args) {
         cmd += L' ';
@@ -107,13 +108,13 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms,
     }
 
     HANDLE out_r = nullptr, out_w = nullptr, err_r = nullptr, err_w = nullptr;
-    SECURITY_ATTRIBUTES sa = {sizeof(sa), nullptr, TRUE};
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
     CreatePipe(&out_r, &out_w, &sa, 0);
     CreatePipe(&err_r, &err_w, &sa, 0);
     SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
 
-    STARTUPINFOW si = {sizeof(si)};
+    STARTUPINFOW si = { sizeof(si) };
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = out_w;
     si.hStdError = err_w;
@@ -121,11 +122,12 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms,
 
     std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
     cmd_buf.push_back(L'\0');
-    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, cwd, &si, &pi)) {
+    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd, &si, &pi)) {
         DWORD gle = GetLastError();
-        CloseHandle(out_r); CloseHandle(out_w);
-        CloseHandle(err_r); CloseHandle(err_w);
+        CloseHandle(out_r);
+        CloseHandle(out_w);
+        CloseHandle(err_r);
+        CloseHandle(err_w);
         throw std::runtime_error("Failed to run git (error " + std::to_string(gle) + ")");
     }
     CloseHandle(out_w);
@@ -156,8 +158,7 @@ void cleanup_stale_lock(const fs::path& git_dir, const log_fn& log) {
     auto ftime = fs::last_write_time(lock, ec);
     if (ec)
         return;
-    auto age = std::chrono::duration_cast<std::chrono::seconds>(
-        fs::file_time_type::clock::now() - ftime).count();
+    auto age = std::chrono::duration_cast<std::chrono::seconds>(fs::file_time_type::clock::now() - ftime).count();
     if (age > 30) {
         fs::remove(lock, ec);
         if (!ec)
@@ -175,13 +176,11 @@ const std::vector<std::string>& _default_preset() {
 
 } // anonymous namespace
 
-
 presets_t g_presets = {
-    {"General", {".svn", "x64", "*~", "*.TMP"}},
-    {"C++", {".vs", "x64", "Debug", "Release", "*.suo", "*.user", "*.sdf", "*.opensdf", "*.dll", "*.lib"}},
-    {"Python", {"__pycache__", "*.pyc", ".mypy_cache", ".pytest_cache", "*.egg-info", ".venv", "venv"}},
+    { "General", { ".svn", "x64", "*~", "*.TMP" } },
+    { "C++", { ".vs", "x64", "Debug", "Release", "*.suo", "*.user", "*.sdf", "*.opensdf", "*.dll", "*.lib" } },
+    { "Python", { "__pycache__", "*.pyc", ".mypy_cache", ".pytest_cache", "*.egg-info", ".venv", "venv" } },
 };
-
 
 std::string run_git(const std::vector<std::string>& args, DWORD timeout_ms) {
     auto r = git_exec(args, timeout_ms);
@@ -193,9 +192,9 @@ std::string run_git(const std::vector<std::string>& args, DWORD timeout_ms) {
 std::tuple<int, int, int> git_version() {
     git_result r;
     try {
-        r = git_exec({"--version"}, 10000);
+        r = git_exec({ "--version" }, 10000);
     } catch (...) {
-        return {0, 0, 0};
+        return { 0, 0, 0 };
     }
     std::istringstream ss(r.out);
     std::string word;
@@ -203,10 +202,10 @@ std::tuple<int, int, int> git_version() {
         if (!word.empty() && std::isdigit((unsigned char)word[0])) {
             int maj = 0, min = 0, pat = 0;
             if (sscanf_s(word.c_str(), "%d.%d.%d", &maj, &min, &pat) >= 2)
-                return {maj, min, pat};
+                return { maj, min, pat };
         }
     }
-    return {0, 0, 0};
+    return { 0, 0, 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -215,32 +214,32 @@ std::tuple<int, int, int> git_version() {
 
 std::wstring watch_engine::_shadow_name(const std::wstring& watch_path) {
     std::wstring result;
-    for (wchar_t c : watch_path) {
+    for (wchar_t c : watch_path)
         if (iswalnum(c))
             result += c;
         else
             result += L'_';
-    }
     while (!result.empty() && result.back() == L'_')
         result.pop_back();
     return result;
 }
 
-watch_engine::watch_engine(const std::wstring& watch_path, const std::wstring& shadows_base,
-                           log_fn log, const std::vector<std::string>& initial_patterns,
-                           bool skip_binary)
+watch_engine::watch_engine(
+    const std::wstring& watch_path,
+    const std::wstring& shadows_base,
+    log_fn log,
+    const std::vector<std::string>& initial_patterns,
+    bool skip_binary)
     : _watch_path(fs::absolute(fs::path(watch_path)).wstring())
     , _shadow_path((fs::path(shadows_base) / _shadow_name(watch_path)).wstring())
     , _log(std::move(log))
     , _ignore(fs::path(_shadow_path) / "ignore")
-    , _skip_binary(skip_binary)
-{
+    , _skip_binary(skip_binary) {
     std::error_code ec;
     fs::create_directories(_shadow_path, ec);
     fs::path ignore_file = fs::path(_shadow_path) / "ignore";
     if (!fs::exists(ignore_file)) {
-        const std::vector<std::string>& pats =
-            initial_patterns.empty() ? _default_preset() : initial_patterns;
+        const std::vector<std::string>& pats = initial_patterns.empty() ? _default_preset() : initial_patterns;
         _ignore.set_patterns(pats);
     }
 }
@@ -259,10 +258,12 @@ void watch_engine::start() {
     if (!_stop_event)
         _stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     ResetEvent(_stop_event);
+    // clang-format off
     _thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
         static_cast<watch_engine*>(p)->_thread_proc();
         return 0;
     }, this, 0, nullptr);
+    // clang-format on
 }
 
 void watch_engine::stop() {
@@ -299,10 +300,12 @@ void watch_engine::resume() {
         return;
     _paused = false;
     ResetEvent(_stop_event);
+    // clang-format off
     _thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
         static_cast<watch_engine*>(p)->_thread_proc();
         return 0;
     }, this, 0, nullptr);
+    // clang-format on
     _log("Resumed: " + path_utf8(_watch_path));
 }
 
@@ -323,10 +326,8 @@ void watch_engine::sync_exclude() {
         for (auto& a : always_ignored)
             out << a << '\n';
         std::ifstream in(_ignore.file(), std::ios::binary);
-        if (in)
-            out << in.rdbuf();
-        else
-            _log("WARNING: ignore file not found: " + path_utf8(_ignore.file()));
+        if (in) out << in.rdbuf();
+        else _log("WARNING: ignore file not found: " + path_utf8(_ignore.file()));
         for (auto& r : _nested_roots)
             out << r << "/\n";
     }
@@ -346,16 +347,17 @@ std::string watch_engine::_git(const std::vector<std::string>& args, bool check,
 }
 
 void watch_engine::_apply_perf_config() {
-    _git({"config", "feature.manyFiles", "true"});
-    _git({"config", "index.version", "4"});
-    _git({"config", "core.untrackedCache", "true"});
+    _git({ "config", "feature.manyFiles", "true" });
+    _git({ "config", "index.version", "4" });
+    _git({ "config", "core.untrackedCache", "true" });
     auto [maj, min, pat] = git_version();
     if (maj > 2 || (maj == 2 && min >= 37)) {
-        _git({"config", "core.fsmonitor", "true"});
+        _git({ "config", "core.fsmonitor", "true" });
         _log("Performance: large-repo settings enabled");
     } else {
-        _log("Performance: large-repo settings enabled (fsmonitor skipped - Git "
-             + std::to_string(maj) + "." + std::to_string(min) + " < 2.37)");
+        _log(
+            "Performance: large-repo settings enabled (fsmonitor skipped - Git " + std::to_string(maj) + "." +
+            std::to_string(min) + " < 2.37)");
     }
 }
 
@@ -368,12 +370,16 @@ void watch_engine::_apply_perf_config() {
 void watch_engine::_discover_nested_repos() {
     std::error_code ec;
     for (auto& entry : fs::directory_iterator(_watch_path, ec)) {
-        if (ec) break;
-        if (!entry.is_directory(ec)) continue;
-        if (!fs::exists(entry.path() / ".git", ec)) continue;
+        if (ec)
+            break;
+        if (!entry.is_directory(ec))
+            continue;
+        if (!fs::exists(entry.path() / ".git", ec))
+            continue;
         std::wstring relw = fs::relative(entry.path(), _watch_path, ec).wstring();
         std::replace(relw.begin(), relw.end(), L'\\', L'/');
-        if (relw == L"." || relw.empty()) continue;
+        if (relw == L"." || relw.empty())
+            continue;
         std::string key = wtoa(relw);
         if (std::find(_nested_roots.begin(), _nested_roots.end(), key) == _nested_roots.end())
             _nested_roots.push_back(key);
@@ -383,28 +389,30 @@ void watch_engine::_discover_nested_repos() {
 // Stage files from every known nested repo so they are backed up as plain
 // files (not gitlinks).
 void watch_engine::_stage_all_nested_repos() {
-    for (auto& r : _nested_roots) {
+    for (auto& r : _nested_roots)
         _stage_nested_repo(r);
-    }
 }
 
 // Catch any new gitlinks that `git add` created despite our exclude rules.
 // This is a safety net — _discover_nested_repos should prevent them.
 void watch_engine::_absorb_new_gitlinks() {
-    std::string out = _git({"diff", "--cached", "--raw"}, false);
+    std::string out = _git({ "diff", "--cached", "--raw" }, false);
     std::vector<std::string> roots;
     for (auto& line : split_lines(out)) {
-        if (line.empty() || line[0] != ':') continue;
+        if (line.empty() || line[0] != ':')
+            continue;
         size_t tab = line.find('\t');
-        if (tab == std::string::npos) continue;
+        if (tab == std::string::npos)
+            continue;
         std::istringstream meta(line.substr(0, tab));
         std::string old_mode, new_mode;
         meta >> old_mode >> new_mode;
-        if (new_mode != "160000") continue;
+        if (new_mode != "160000")
+            continue;
         std::string path = line.substr(tab + 1);
         if (std::find(_nested_roots.begin(), _nested_roots.end(), path) == _nested_roots.end()) {
             _nested_roots.push_back(path);
-            _git({"rm", "--cached", "--quiet", "-r", "--ignore-unmatch", "--", path}, false);
+            _git({ "rm", "--cached", "--quiet", "-r", "--ignore-unmatch", "--", path }, false);
             sync_exclude();
             _stage_nested_repo(path);
         }
@@ -439,7 +447,7 @@ bool watch_engine::_is_binary_file(const std::string& rel_path) const {
 }
 
 void watch_engine::_unstage_binaries() {
-    std::string staged = _git({"diff", "--cached", "--name-only"}, false);
+    std::string staged = _git({ "diff", "--cached", "--name-only" }, false);
     std::vector<std::string> bins;
     for (auto& line : split_lines(staged)) {
         std::string f = trim(line);
@@ -464,7 +472,7 @@ void watch_engine::_stage_files(const std::vector<std::string>& add_posix) {
         size_t end = i + batch;
         if (end > add_posix.size())
             end = add_posix.size();
-        std::vector<std::string> args = {gd, wt, "update-index", "--add", "--"};
+        std::vector<std::string> args = { gd, wt, "update-index", "--add", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(add_posix[j]);
         auto r = git_exec(args, 60000, _watch_path.c_str());
@@ -483,7 +491,7 @@ void watch_engine::_remove_paths(const std::vector<std::string>& del_posix) {
         size_t end = i + batch;
         if (end > del_posix.size())
             end = del_posix.size();
-        std::vector<std::string> args = {gd, wt, "rm", "-r", "--cached", "--ignore-unmatch", "--"};
+        std::vector<std::string> args = { gd, wt, "rm", "-r", "--cached", "--ignore-unmatch", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(del_posix[j]);
         git_exec(args, 60000, _watch_path.c_str());
@@ -528,15 +536,16 @@ void watch_engine::_init_shadow_repo() {
         _discover_nested_repos();
         sync_exclude();
         _apply_perf_config();
-        _git({"add", "-A"});
+        _git({ "add", "-A" });
         _absorb_new_gitlinks();
         _stage_all_nested_repos();
-        if (_skip_binary) _unstage_binaries();
-        std::string staged = _git({"diff", "--cached", "--name-status"}, false);
+        if (_skip_binary)
+            _unstage_binaries();
+        std::string staged = _git({ "diff", "--cached", "--name-status" }, false);
         if (!trim(staged).empty()) {
             auto lines = split_lines(trim(staged));
             _log("Catching up " + std::to_string(lines.size()) + " file(s)...");
-            _git({"commit", "-m", "BaconSaver " + now_ts() + " (catch-up)"});
+            _git({ "commit", "-m", "BaconSaver " + now_ts() + " (catch-up)" });
             _log("Catch-up commit done.");
         }
         return;
@@ -544,27 +553,28 @@ void watch_engine::_init_shadow_repo() {
 
     std::error_code ec;
     fs::create_directories(shadow, ec);
-    auto init = git_exec({"init", path_utf8(shadow)}, 30000);
+    auto init = git_exec({ "init", path_utf8(shadow) }, 30000);
     if (init.code != 0)
         throw std::runtime_error("git init failed:\n" + init.err);
 
-    _git({"config", "user.name", "BaconSaver"});
-    _git({"config", "user.email", "baconsaver@local"});
-    _git({"config", "core.autocrlf", "false"});
-    _git({"config", "core.worktree", path_utf8(_watch_path)});
+    _git({ "config", "user.name", "BaconSaver" });
+    _git({ "config", "user.email", "baconsaver@local" });
+    _git({ "config", "core.autocrlf", "false" });
+    _git({ "config", "core.worktree", path_utf8(_watch_path) });
     _apply_perf_config();
     _discover_nested_repos();
     sync_exclude();
 
     _log("Initialized shadow repo: " + path_utf8(git_dir));
     _log("Taking initial snapshot...");
-    _git({"add", "-A"});
+    _git({ "add", "-A" });
     _absorb_new_gitlinks();
     _stage_all_nested_repos();
-    if (_skip_binary) _unstage_binaries();
-    std::string staged = _git({"diff", "--cached", "--name-status"}, false);
+    if (_skip_binary)
+        _unstage_binaries();
+    std::string staged = _git({ "diff", "--cached", "--name-status" }, false);
     if (!trim(staged).empty()) {
-        _git({"commit", "-m", "BaconSaver: initial snapshot"});
+        _git({ "commit", "-m", "BaconSaver: initial snapshot" });
         _log("Initial snapshot committed.");
     } else {
         _log("Nothing to snapshot.");
@@ -582,11 +592,12 @@ void watch_engine::_commit() {
 
     _discover_nested_repos();
     sync_exclude();
-    _git({"add", "-A"});
+    _git({ "add", "-A" });
     _absorb_new_gitlinks();
-    if (_skip_binary) _unstage_binaries();
+    if (_skip_binary)
+        _unstage_binaries();
 
-    std::string chk = _git({"diff", "--cached", "--name-only"}, false);
+    std::string chk = _git({ "diff", "--cached", "--name-only" }, false);
     for (auto& line : split_lines(chk))
         if (line.find("__pycache__") != std::string::npos || line.find(".pyc") != std::string::npos)
             _log("TRACE git-staged: " + trim(line));
@@ -599,7 +610,7 @@ void watch_engine::_commit() {
         std::vector<std::string> adds, dels;
         for (auto& p : pending) {
             if (!_is_under_nested(p))
-                continue;   // handled by `git add -A`
+                continue; // handled by `git add -A`
             fs::path abs = fs::path(_watch_path) / fs::path(atow(p));
             std::error_code ec;
             if (fs::is_regular_file(abs, ec))
@@ -611,14 +622,14 @@ void watch_engine::_commit() {
         _remove_paths(dels);
     }
 
-    std::string staged = _git({"diff", "--cached", "--name-status"}, false);
+    std::string staged = _git({ "diff", "--cached", "--name-status" }, false);
     if (trim(staged).empty())
         return;
     auto lines = split_lines(trim(staged));
     for (auto& line : lines)
         _log("  " + trim(line));
     std::string ts = now_ts();
-    _git({"commit", "-m", "BaconSaver " + ts});
+    _git({ "commit", "-m", "BaconSaver " + ts });
     _log("[" + ts + "] Committed " + std::to_string(lines.size()) + " file(s).");
 }
 
@@ -633,8 +644,8 @@ void watch_engine::_thread_proc() {
     }
     sync_exclude();
 
-    HANDLE dir = CreateFileW(_watch_path.c_str(), FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+    HANDLE dir = CreateFileW(
+        _watch_path.c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
     if (dir == INVALID_HANDLE_VALUE) {
         _log("ERROR: cannot open directory for watching: " + path_utf8(_watch_path));
@@ -645,23 +656,20 @@ void watch_engine::_thread_proc() {
     OVERLAPPED ov = {};
     ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::vector<BYTE> buf(64 * 1024);
-    const DWORD notify_flags =
-        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-        FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE |
-        FILE_NOTIFY_CHANGE_CREATION;
+    const DWORD notify_flags = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                               FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_CREATION;
 
     auto arm = [&]() {
         ResetEvent(ov.hEvent);
         DWORD br = 0;
-        ReadDirectoryChangesW(dir, buf.data(), (DWORD)buf.size(), TRUE,
-                              notify_flags, &br, &ov, nullptr);
+        ReadDirectoryChangesW(dir, buf.data(), (DWORD)buf.size(), TRUE, notify_flags, &br, &ov, nullptr);
     };
 
     _log("Watching: " + path_utf8(_watch_path));
     arm();
 
     ULONGLONG last_change = 0;
-    HANDLE waits[2] = {_stop_event, ov.hEvent};
+    HANDLE waits[2] = { _stop_event, ov.hEvent };
 
     for (;;) {
         bool have = !_pending.empty() || _overflow;
@@ -727,9 +735,9 @@ void watch_engine::_thread_proc() {
 // ---------------------------------------------------------------------------
 
 std::vector<commit_entry> get_commit_log(const fs::path& git_dir, const fs::path& work_tree) {
-    auto r = git_exec({"--git-dir=" + path_utf8(git_dir),
-                       "--work-tree=" + path_utf8(work_tree),
-                       "log", "--format=%H%x09%ai%x09%s"}, 30000);
+    auto r = git_exec(
+        { "--git-dir=" + path_utf8(git_dir), "--work-tree=" + path_utf8(work_tree), "log", "--format=%H%x09%ai%x09%s" },
+        30000);
     std::vector<commit_entry> commits;
     for (auto& line : split_lines(r.out)) {
         if (trim(line).empty())
@@ -749,11 +757,11 @@ std::vector<commit_entry> get_commit_log(const fs::path& git_dir, const fs::path
     return commits;
 }
 
-std::vector<commit_file> get_commit_files(const fs::path& git_dir, const fs::path& work_tree,
-                                          const std::string& hash) {
-    auto r = git_exec({"--git-dir=" + path_utf8(git_dir),
-                       "--work-tree=" + path_utf8(work_tree),
-                       "diff-tree", "--root", "--no-commit-id", "-r", "--name-status", hash}, 30000);
+std::vector<commit_file> get_commit_files(const fs::path& git_dir, const fs::path& work_tree, const std::string& hash) {
+    auto r = git_exec(
+        { "--git-dir=" + path_utf8(git_dir), "--work-tree=" + path_utf8(work_tree), "diff-tree", "--root",
+          "--no-commit-id", "-r", "--name-status", hash },
+        30000);
     std::vector<commit_file> files;
     for (auto& line : split_lines(r.out)) {
         size_t tab = line.find('\t');
@@ -767,17 +775,15 @@ std::vector<commit_file> get_commit_files(const fs::path& git_dir, const fs::pat
     return files;
 }
 
-std::string get_file_at_commit(const fs::path& git_dir, const std::string& hash,
-                               const std::string& file_path) {
-    auto r = git_exec({"--git-dir=" + path_utf8(git_dir), "show", hash + ":" + file_path}, 30000);
+std::string get_file_at_commit(const fs::path& git_dir, const std::string& hash, const std::string& file_path) {
+    auto r = git_exec({ "--git-dir=" + path_utf8(git_dir), "show", hash + ":" + file_path }, 30000);
     if (r.code != 0)
         throw std::runtime_error("Could not retrieve " + file_path + " at " + hash);
     return r.out;
 }
 
 std::vector<std::string> get_full_tree_at_commit(const fs::path& git_dir, const std::string& hash) {
-    auto r = git_exec({"--git-dir=" + path_utf8(git_dir),
-                       "ls-tree", "-r", "--name-only", hash}, 30000);
+    auto r = git_exec({ "--git-dir=" + path_utf8(git_dir), "ls-tree", "-r", "--name-only", hash }, 30000);
     std::vector<std::string> out;
     for (auto& line : split_lines(r.out)) {
         std::string t = trim(line);
@@ -787,20 +793,22 @@ std::vector<std::string> get_full_tree_at_commit(const fs::path& git_dir, const 
     return out;
 }
 
-std::string get_diff_for_commit(const fs::path& git_dir, const fs::path& work_tree,
-                                const std::string& hash, const std::string& file_path) {
-    std::vector<std::string> args = {"--git-dir=" + path_utf8(git_dir),
-                                     "--work-tree=" + path_utf8(work_tree),
-                                     "diff", hash + "~1", hash, "--"};
+std::string get_diff_for_commit(
+    const fs::path& git_dir, const fs::path& work_tree, const std::string& hash, const std::string& file_path) {
+    std::vector<std::string> args = {
+        "--git-dir=" + path_utf8(git_dir), "--work-tree=" + path_utf8(work_tree), "diff", hash + "~1", hash, "--"
+    };
     if (!file_path.empty())
         args.push_back(file_path);
     auto r = git_exec(args, 30000);
     return r.out;
 }
 
-std::vector<std::string> export_files(const fs::path& git_dir, const std::string& hash,
-                                      const std::vector<std::string>& file_paths,
-                                      const fs::path& dest_dir) {
+std::vector<std::string> export_files(
+    const fs::path& git_dir,
+    const std::string& hash,
+    const std::vector<std::string>& file_paths,
+    const fs::path& dest_dir) {
     std::vector<std::string> exported;
     for (auto& fp : file_paths) {
         std::string content;

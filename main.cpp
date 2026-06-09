@@ -51,6 +51,8 @@ HWND g_console = nullptr;
 HWND g_status = nullptr;
 HBRUSH g_dark_brush = nullptr;
 HFONT g_mono_font = nullptr;
+int g_splitter_x = 224;
+bool g_dragging = false;
 std::vector<std::unique_ptr<entry>> g_entries;
 std::wstring g_shadows_base;
 bool g_have_base = false;
@@ -445,7 +447,8 @@ void layout(HWND hwnd) {
     int W = rc.right, H = rc.bottom;
     int margin = 8;
     int status_h = 22;
-    int left_w = 224;
+    int left_w = g_splitter_x;
+    int splitter_w = 6;
     int body_top = margin + 18;          // below the "Watched Directories" label
     int body_h = H - status_h - body_top - margin;
 
@@ -464,7 +467,7 @@ void layout(HWND hwnd) {
         by += btn_h + btn_gap;
     }
 
-    int cx = margin + left_w + margin;
+    int cx = margin + left_w + splitter_w + margin;
     MoveWindow(g_console, cx, margin, W - cx - margin, H - status_h - margin * 2, TRUE);
     MoveWindow(g_status, 0, H - status_h, W, status_h, TRUE);
 }
@@ -498,7 +501,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)b.id, hi, nullptr);
 
             g_console = CreateWindowExW(0, L"EDIT", L"",
-                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | WS_HSCROLL |
+                WS_CHILD | WS_VISIBLE | WS_BORDER |
                 ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
                 0, 0, 10, 10, hwnd, nullptr, hi, nullptr);
             SendMessageW(g_console, EM_SETLIMITTEXT, 0, 0);
@@ -528,6 +531,58 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             layout(hwnd);
             return 0;
+        case WM_SETCURSOR:
+            {
+                RECT rc; GetClientRect(hwnd, &rc);
+                int gutter_x = 8 + g_splitter_x;
+                int gutter_w = 6;
+                int body_top = 8 + 18;
+                int body_h = rc.bottom - 22 - body_top - 8;
+                RECT gutter = {gutter_x, body_top, gutter_x + gutter_w, body_top + body_h};
+                POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+                if (PtInRect(&gutter, pt)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONDOWN:
+            {
+                RECT rc; GetClientRect(hwnd, &rc);
+                int gutter_x = 8 + g_splitter_x;
+                int gutter_w = 6;
+                int body_top = 8 + 18;
+                int body_h = rc.bottom - 22 - body_top - 8;
+                RECT gutter = {gutter_x, body_top, gutter_x + gutter_w, body_top + body_h};
+                POINT pt = {LOWORD(lp), HIWORD(lp)};
+                if (PtInRect(&gutter, pt)) {
+                    g_dragging = true;
+                    SetCapture(hwnd);
+                    return 0;
+                }
+            }
+            break;
+        case WM_MOUSEMOVE:
+            if (g_dragging) {
+                RECT rc; GetClientRect(hwnd, &rc);
+                int x = LOWORD(lp) - 3;
+                if (x < 80) x = 80;
+                if (x > rc.right - 280) x = rc.right - 280;
+                if (x != g_splitter_x) {
+                    g_splitter_x = x;
+                    layout(hwnd);
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
+                return 0;
+            }
+            break;
+        case WM_LBUTTONUP:
+            if (g_dragging) {
+                g_dragging = false;
+                ReleaseCapture();
+                return 0;
+            }
+            break;
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLOREDIT: {
             if ((HWND)lp == g_console) {
