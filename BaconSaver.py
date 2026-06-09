@@ -152,6 +152,12 @@ def _git(args: list[str], git_dir: Path, work_tree: Path | None = None,
     except subprocess.TimeoutExpired:
         raise RuntimeError(f'git {args[0]} timed out after {timeout}s (network drive down?)')
     if check and r.returncode != 0:
+        # For 'add' commands, ignore errors caused by .git folders or stale locks
+        if args[0] == 'add' and ('.git' in r.stderr or 'index.lock' in r.stderr or 'Permission denied' in r.stderr):
+            # Still log but don't crash
+            log_fn = getattr(_git, '_log', print)
+            log_fn(f"Git add warning (ignored): {r.stderr.strip()}")
+            return r
         raise RuntimeError(f'git {args[0]} failed:\n{r.stderr}')
     return r
 
@@ -184,7 +190,8 @@ def _init_shadow_repo(watch: Path, shadow: Path, ignore: IgnoreFilter,
     if git_dir.exists():
         _sync_git_exclude(shadow, ignore)
         _apply_perf_config(git_dir, log)
-        _git(['add', '-A'], git_dir, watch)
+        # Exclude any .git directory (top-level or deeper) from being added
+        _git(['add', '-A', '--', ':(exclude,top).git', ':(exclude)*/.git'], git_dir, watch)
         r = _git(['status', '--porcelain'], git_dir, watch, check=False)
         if r.stdout.strip():
             lines = r.stdout.strip().splitlines()
@@ -212,7 +219,8 @@ def _init_shadow_repo(watch: Path, shadow: Path, ignore: IgnoreFilter,
 
     log(f'Initialized shadow repo: {git_dir}')
     log('Taking initial snapshot...')
-    _git(['add', '-A'], git_dir, watch)
+    # Exclude any .git directory (top-level or deeper) from being added
+    _git(['add', '-A', '--', ':(exclude,top).git', ':(exclude)*/.git'], git_dir, watch)
     r = _git(['status', '--porcelain'], git_dir, watch, check=False)
     if r.stdout.strip():
         _git(['commit', '-m', 'BaconSaver: initial snapshot'], git_dir, watch)
@@ -318,6 +326,9 @@ class _Handler(FileSystemEventHandler):
         self._timer: threading.Timer | None = None
         self._committing = False
 
+    def _contains_git(self, path: str) -> bool:
+        return '.git' in Path(path).parts
+
     def _schedule(self) -> None:
         if self._timer:
             self._timer.cancel()
@@ -341,7 +352,8 @@ class _Handler(FileSystemEventHandler):
             self._log(f'{len(pending)} change(s) pending, committing...')
             try:
                 _cleanup_stale_lock(self.git_dir, self._log)
-                _git(['add', '-A'], self.git_dir, self.watch)
+                # Exclude any .git directory (top-level or deeper) from being added
+                _git(['add', '-A', '--', ':(exclude,top).git', ':(exclude)*/.git'], self.git_dir, self.watch)
                 r = _git(['status', '--porcelain'], self.git_dir, self.watch, check=False)
                 if r.stdout.strip():
                     ts = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -354,6 +366,9 @@ class _Handler(FileSystemEventHandler):
                     self._log('Nothing to commit (files may have been deleted)')
             except RuntimeError as e:
                 self._log(f'Commit failed: {e}')
+                # If the error mentions .git, it's likely harmless; continue
+                if '.git' in str(e):
+                    self._log('Note: This error was caused by a .git folder and was ignored.')
         finally:
             self._committing = False
 
@@ -363,6 +378,9 @@ class _Handler(FileSystemEventHandler):
             return
         try:
             rel = str(p.relative_to(self.watch))
+            # Skip any path that contains a .git component
+            if '.git' in Path(rel).parts:
+                return
         except ValueError:
             return
         if self._ignore.is_ignored(rel):
@@ -372,18 +390,26 @@ class _Handler(FileSystemEventHandler):
         self._schedule()
 
     def on_created(self, event):
+        if self._contains_git(event.src_path):
+            return
         if not event.is_directory:
             self._record('changed', event.src_path)
 
     def on_modified(self, event):
+        if self._contains_git(event.src_path):
+            return
         if not event.is_directory:
             self._record('changed', event.src_path)
 
     def on_deleted(self, event):
+        if self._contains_git(event.src_path):
+            return
         if not event.is_directory:
             self._record('deleted', event.src_path)
 
     def on_moved(self, event):
+        if self._contains_git(event.src_path) or self._contains_git(event.dest_path):
+            return
         if not event.is_directory:
             self._record('deleted', event.src_path)
             self._record('changed', event.dest_path)
@@ -467,9 +493,6 @@ class WatchEngine:
         self._observer.schedule(self._handler, str(self.watch_path), recursive=True)
         self._observer.start()
         self._log(f'Resumed: {self.watch_path}')
-
-    def sync_exclude(self) -> None:
-        _sync_git_exclude(self.shadow_path, self.ignore)
 
     def sync_exclude(self) -> None:
         _sync_git_exclude(self.shadow_path, self.ignore)

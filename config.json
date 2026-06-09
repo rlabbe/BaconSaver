@@ -1,11 +1,6 @@
 {
   "shadows_base": "E:\\BaconSaverData\\shadows",
-  "watched": [
-    {
-      "path": "D:\\d2",
-      "paused": false
-    }
-  ],
+  "watched": [],
   "restore_size": [
     1840,
     907
