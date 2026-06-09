@@ -841,7 +841,6 @@ struct restore_state {
     std::vector<commit_entry> commits;
     std::string current_hash;
     std::string selected_file;
-    std::string selected_status;
     int tab_width = 4;
 
     HWND commits_lb = nullptr;
@@ -853,6 +852,7 @@ struct restore_state {
     HWND preview = nullptr;
     HWND count_lbl = nullptr;
     HWND export_btn = nullptr;
+    HWND sel_all_cb = nullptr;
 
     int splitter1_x = 240;
     int splitter2_x = 600;
@@ -921,10 +921,6 @@ void restore_refresh_preview(restore_state* st) {
         return;
     }
     try {
-        if (st->selected_status == "D") {
-            set_preview_plain(st->preview, L"[File deleted in this snapshot]");
-            return;
-        }
         bool diff = SendMessageW(st->view_diff, BM_GETCHECK, 0, 0) == BST_CHECKED;
         if (diff) {
             std::string d = get_diff_for_commit(st->git_dir, st->work_tree, st->current_hash, st->selected_file);
@@ -948,7 +944,6 @@ void restore_refresh_files(restore_state* st) {
     ListView_DeleteAllItems(st->files_lv);
     rich_clear(st->preview);
     st->selected_file.clear();
-    st->selected_status.clear();
     if (st->current_hash.empty())
         return;
 
@@ -961,10 +956,9 @@ void restore_refresh_files(restore_state* st) {
                 LVITEMW it = {};
                 it.mask = LVIF_TEXT;
                 it.iItem = n;
-                std::wstring path = to_wide(f.path);
+                std::wstring path = to_wide(f.status + "  " + f.path);
                 it.pszText = path.data();
                 ListView_InsertItem(st->files_lv, &it);
-                ListView_SetItemText(st->files_lv, n, 1, (LPWSTR)to_wide(f.status).c_str());
                 ListView_SetCheckState(st->files_lv, n, TRUE);
                 ++n;
             }
@@ -988,14 +982,14 @@ void restore_refresh_files(restore_state* st) {
 
     SetWindowTextW(st->count_lbl, (std::to_wstring(n) + L" file(s)").c_str());
     EnableWindow(st->export_btn, n > 0);
+    SendMessageW(st->sel_all_cb, BM_SETCHECK, n > 0 ? BST_CHECKED : BST_UNCHECKED, 0);
 
     if (n == 1) {
         wchar_t buf[1024];
         ListView_GetItemText(st->files_lv, 0, 0, buf, 1024);
         st->selected_file = to_utf8(buf);
-        wchar_t sbuf[64];
-        ListView_GetItemText(st->files_lv, 0, 1, sbuf, 64);
-        st->selected_status = to_utf8(sbuf);
+        if (st->selected_file.size() > 3 && st->selected_file[1] == ' ')
+            st->selected_file = st->selected_file.substr(3);
         ListView_SetItemState(st->files_lv, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         restore_refresh_preview(st);
     }
@@ -1169,15 +1163,13 @@ void restore_layout(HWND hwnd, restore_state* st) {
         MoveWindow(lbl_snap, margin, top, left_w, 18, TRUE);
     MoveWindow(st->commits_lb, margin, top + 22, left_w, body_h - 22, TRUE);
 
-    // mid: mode row + buttons + list
+    // mid: mode row + checkbox + list
     int mx = margin + left_w + splitter_w + margin;
     MoveWindow(st->mode_changed, mx, top, 110, 22, TRUE);
     MoveWindow(st->mode_all, mx + 112, top, 110, 22, TRUE);
-    MoveWindow(GetDlgItem(hwnd, IDC_RES_SEL_ALL), mx + mid_w - 150, top, 72, 24, TRUE);
-    MoveWindow(GetDlgItem(hwnd, IDC_RES_SEL_NONE), mx + mid_w - 74, top, 74, 24, TRUE);
-    MoveWindow(st->files_lv, mx, top + 28, mid_w, body_h - 28, TRUE);
-    ListView_SetColumnWidth(st->files_lv, 1, 70);
-    ListView_SetColumnWidth(st->files_lv, 0, mid_w - 70 - 24);
+    MoveWindow(st->sel_all_cb, mx, top + 26, 160, 16, TRUE);
+    MoveWindow(st->files_lv, mx, top + 44, mid_w, body_h - 44, TRUE);
+    ListView_SetColumnWidth(st->files_lv, 0, mid_w - 24);
 
     // right: view row + font + preview
     MoveWindow(st->view_content, right_x, top, 80, 22, TRUE);
@@ -1231,23 +1223,19 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             IDC_RES_MODE_CHANGED);
         st->mode_all = make(L"BUTTON", L"Full snapshot", BS_AUTORADIOBUTTON, 0, 0, 10, 10, hwnd, IDC_RES_MODE_ALL);
         SendMessageW(st->mode_changed, BM_SETCHECK, BST_CHECKED, 0);
-        make(L"BUTTON", L"Select All", WS_TABSTOP, 0, 0, 10, 10, hwnd, IDC_RES_SEL_ALL);
-        make(L"BUTTON", L"Select None", WS_TABSTOP, 0, 0, 10, 10, hwnd, IDC_RES_SEL_NONE);
+        st->sel_all_cb = make(
+            L"BUTTON", L"Select / Deselect All", WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 10, 10, hwnd, IDC_RES_SEL_ALL);
 
         st->files_lv = CreateWindowExW(
-            0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL, 0, 0, 10,
-            10, hwnd, (HMENU)(INT_PTR)IDC_RES_FILES, GetModuleHandleW(nullptr), nullptr);
+            0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
+            0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_RES_FILES, GetModuleHandleW(nullptr), nullptr);
         set_font(st->files_lv, ui_font());
         ListView_SetExtendedListViewStyle(st->files_lv, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
         {
             LVCOLUMNW col = {};
-            col.mask = LVCF_TEXT | LVCF_WIDTH;
-            col.pszText = (LPWSTR)L"File";
+            col.mask = LVCF_WIDTH;
             col.cx = 260;
             ListView_InsertColumn(st->files_lv, 0, &col);
-            col.pszText = (LPWSTR)L"Status";
-            col.cx = 70;
-            ListView_InsertColumn(st->files_lv, 1, &col);
         }
 
         st->view_content = make(
@@ -1382,9 +1370,10 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 wchar_t buf[1024];
                 ListView_GetItemText(st->files_lv, nv->iItem, 0, buf, 1024);
                 st->selected_file = to_utf8(buf);
-                wchar_t sbuf[64];
-                ListView_GetItemText(st->files_lv, nv->iItem, 1, sbuf, 64);
-                st->selected_status = to_utf8(sbuf);
+                // Parse status prefix from "M  path/to/file" format
+                if (st->selected_file.size() > 3 && st->selected_file[1] == ' ') {
+                    st->selected_file = st->selected_file.substr(3);
+                }
                 restore_refresh_preview(st);
             }
         }
@@ -1412,16 +1401,11 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             restore_refresh_preview(st);
             return 0;
         }
-        if (id == IDC_RES_SEL_ALL) { // select all
+        if (id == IDC_RES_SEL_ALL) {
             int n = ListView_GetItemCount(st->files_lv);
+            bool check = SendMessageW(st->sel_all_cb, BM_GETCHECK, 0, 0) == BST_CHECKED;
             for (int i = 0; i < n; ++i)
-                ListView_SetCheckState(st->files_lv, i, TRUE);
-            return 0;
-        }
-        if (id == IDC_RES_SEL_NONE) {
-            int n = ListView_GetItemCount(st->files_lv);
-            for (int i = 0; i < n; ++i)
-                ListView_SetCheckState(st->files_lv, i, FALSE);
+                ListView_SetCheckState(st->files_lv, i, check);
             return 0;
         }
         if (id == IDC_RES_FONT) {

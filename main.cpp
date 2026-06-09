@@ -38,6 +38,7 @@ enum {
     ID_IGNORES,
     ID_RESTORE,
     ID_REPO,
+    ID_CONFIG,
     ID_STATUS,
     ID_TRAY_SHOW = 2001,
     ID_TRAY_QUIT = 2002,
@@ -355,17 +356,19 @@ void add_directory() {
         std::error_code ec;
         fs::path wp = fs::absolute(fs::path(path), ec);
         fs::path rp = fs::absolute(fs::path(g_shadows_base), ec);
-        auto inside = [&](const fs::path& a, const fs::path& b) -> bool {
-            auto rel = fs::relative(a, b, ec);
-            if (ec)
-                return false;
-            auto s = rel.wstring();
-            return s == L"." || s.size() < 2 || s[0] != L'.' || s[1] != L'.';
-        };
-        if (!ec && (inside(wp, rp) || inside(rp, wp))) {
-            MessageBoxW(g_main, L"The watched directory cannot be the same as (or inside) the backup repo location.",
-                        L"Invalid Directory", MB_ICONWARNING);
-            return;
+        if (!ec && wp.root_name() == rp.root_name()) {
+            auto inside = [&](const fs::path& a, const fs::path& b) -> bool {
+                auto rel = fs::relative(a, b, ec);
+                if (ec)
+                    return false;
+                auto s = rel.wstring();
+                return s == L"." || s.size() < 2 || s[0] != L'.' || s[1] != L'.';
+            };
+            if (!ec && (inside(wp, rp) || inside(rp, wp))) {
+                MessageBoxW(g_main, L"The watched directory cannot be the same as (or inside) the backup repo location.",
+                            L"Invalid Directory", MB_ICONWARNING);
+                return;
+            }
         }
     }
     auto [maj, min, pat] = git_version();
@@ -518,7 +521,7 @@ void layout(HWND hwnd) {
     int body_h = H - status_h - body_top - margin;
 
     const int btn_h = 28, btn_gap = 4;
-    int btn_area = 6 * (btn_h + btn_gap);
+    int btn_area = 7 * (btn_h + btn_gap);
     int list_h = body_h - btn_area - btn_gap;
     if (list_h < 60)
         list_h = 60;
@@ -527,8 +530,8 @@ void layout(HWND hwnd) {
     MoveWindow(g_list, margin, body_top, left_w, list_h, TRUE);
 
     int by = body_top + list_h + btn_gap;
-    int ids[6] = { ID_ADD, ID_REMOVE, ID_PAUSE, ID_IGNORES, ID_RESTORE, ID_REPO };
-    for (int i = 0; i < 6; ++i) {
+    int ids[7] = { ID_ADD, ID_REMOVE, ID_PAUSE, ID_IGNORES, ID_RESTORE, ID_REPO, ID_CONFIG };
+    for (int i = 0; i < 7; ++i) {
         MoveWindow(GetDlgItem(hwnd, ids[i]), margin, by, left_w, btn_h, TRUE);
         by += btn_h + btn_gap;
     }
@@ -563,6 +566,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } btns[] = {
             { ID_ADD, L"Add Directory..." },    { ID_REMOVE, L"Remove" },      { ID_PAUSE, L"Pause / Resume" },
             { ID_IGNORES, L"Edit Ignores..." }, { ID_RESTORE, L"Restore..." }, { ID_REPO, L"Set Repo Location..." },
+            { ID_CONFIG, L"Edit Config..." },
         };
         for (auto& b : btns)
             CreateWindowExW(
@@ -714,6 +718,9 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case ID_REPO:
             set_repo_location();
+            return 0;
+        case ID_CONFIG:
+            ShellExecuteW(nullptr, L"open", L"notepad.exe", config_path().wstring().c_str(), nullptr, SW_SHOW);
             return 0;
         case ID_TRAY_SHOW:
             show_from_tray(hwnd);

@@ -195,8 +195,8 @@ const std::vector<std::string>& default_preset() {
 
 presets_t g_presets = {
     { "General", { ".svn", "x64", "*~", "*.TMP" } },
-    { "C++", { ".vs", "x64", "Debug", "Release", "*.suo", "*.user", "*.sdf", "*.opensdf", "*.dll", "*.lib" } },
-    { "Python", { "__pycache__", "*.pyc", ".mypy_cache", ".pytest_cache", "*.egg-info", ".venv", "venv" } },
+    { "C++", { ".vs", "x64", "Debug", "Release", "*.suo", "*.user", "*.sdf", "*.opensdf", "*.dll", "*.lib", "*.exe", "*.pdb", "*.ilk", "*.exp", "*.obj" } },
+    { "Python", { "__pycache__", "*.pyc", ".mypy_cache", ".pytest_cache", "*.egg-info", ".venv", "venv", ".ipynb_checkpoints" } },
 };
 
 std::string run_git(const std::vector<std::string>& args, DWORD timeout_ms) {
