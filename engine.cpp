@@ -140,14 +140,11 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, cons
     DWORD deadline = timeout_ms ? GetTickCount() + timeout_ms : 0;
     HANDLE handles[2] = { pi.hProcess, cancel_event ? cancel_event : pi.hProcess };
     DWORD handle_count = cancel_event ? 2 : 1;
-    trace_log("git_exec: waiting, cancel_event=" + std::to_string((uintptr_t)cancel_event) + " timeout=" + std::to_string(timeout_ms));
-
     for (;;) {
         DWORD remain = 100;
         if (deadline) {
             DWORD now = GetTickCount();
             if (now >= deadline) {
-                trace_log("git_exec: timeout reached");
                 TerminateProcess(pi.hProcess, 1);
                 r.code = 1;
                 r.err = "timeout or error";
@@ -159,12 +156,10 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, cons
         }
         DWORD which = WaitForMultipleObjects(handle_count, handles, FALSE, remain);
         if (which == WAIT_OBJECT_0) {
-            trace_log("git_exec: process exited normally");
             GetExitCodeProcess(pi.hProcess, &r.code);
             break;
         }
         if (which == WAIT_OBJECT_0 + 1) {
-            trace_log("git_exec: cancelled via event");
             TerminateProcess(pi.hProcess, 1);
             r.code = 1;
             r.err = "cancelled";
@@ -332,27 +327,20 @@ void watch_engine::start() {
 
 void watch_engine::stop() {
     if (!running_) {
-        log_("stop: not running");
         return;
     }
     if (stopping_) {
-        log_("stop: already stopping");
         return;
     }
     stopping_ = true;
-    trace_log("stop: signalling stop_event");
-    log_("stop: signalling stop_event");
     if (stop_event_)
         SetEvent(stop_event_);
     if (thread_) {
-        trace_log("stop: waiting for thread");
-        log_("stop: waiting for thread");
         for (;;) {
             DWORD r = WaitForSingleObject(thread_, 250);
             if (r == WAIT_OBJECT_0) {
                 CloseHandle(thread_);
                 thread_ = nullptr;
-                log_("stop: thread joined");
                 break;
             }
             MSG msg;
@@ -441,7 +429,6 @@ std::string watch_engine::git(const std::vector<std::string>& args, bool check) 
     full.push_back("--git-dir=" + path_utf8(fs::path(shadow_path_) / ".git"));
     full.push_back("--work-tree=" + path_utf8(watch_path_));
     full.insert(full.end(), args.begin(), args.end());
-    trace_log("git: " + full[2]);
     auto r = git_exec(full, 0, nullptr, stop_event_);
     if (check && r.code != 0) {
         if (r.err == "cancelled")
@@ -480,7 +467,6 @@ void watch_engine::discover_nested_repos() {
         if (ec)
             break;
         if (++count % 1000 == 0 && WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
-            trace_log("discover_nested_repos: cancelled at entry " + std::to_string(count));
             return;
         }
         if (!entry.is_directory(ec))
@@ -566,7 +552,6 @@ void watch_engine::unstage_binaries() {
             bins.push_back(f);
     }
     if (!bins.empty()) {
-        log_("Skipping " + std::to_string(bins.size()) + " binary file(s)");
         remove_paths(bins);
     }
 }
@@ -587,8 +572,6 @@ void watch_engine::stage_files(const std::vector<std::string>& add_posix) {
         for (size_t j = i; j < end; ++j)
             args.push_back(add_posix[j]);
         auto r = git_exec(args, 60000, watch_path_.c_str(), stop_event_);
-        if (r.code != 0 && !trim(r.err).empty())
-            log_("update-index: " + trim(r.err));
     }
 }
 
@@ -621,7 +604,6 @@ void watch_engine::stage_nested_repo(const std::string& root_posix) {
         if (ec)
             break;
         if (++count % 1000 == 0 && WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
-            trace_log("stage_nested_repo: cancelled at entry " + std::to_string(count));
             return;
         }
         if (it->is_directory(ec)) {
@@ -653,15 +635,10 @@ void watch_engine::init_shadow_repo() {
     if (fs::exists(git_dir)) {
         log_("Checking existing repo...");
         if (fs::exists(git_dir)) {
-        trace_log("init: discovering nested repos");
         discover_nested_repos();
-        trace_log("init: syncing exclude");
         sync_exclude();
-        trace_log("init: applying perf config");
         apply_perf_config();
-        trace_log("init: checking cancelled");
         if (cancelled()) {
-            trace_log("init: cancelled after perf config");
             return;
         }
         log_("Initialized shadow repo: " + path_utf8(git_dir));
@@ -673,7 +650,6 @@ void watch_engine::init_shadow_repo() {
         stage_all_nested_repos();
         if (skip_binary_)
             unstage_binaries();
-        log_("diff --cached --name-status ...");
         std::string staged = git({ "diff", "--cached", "--name-status" }, false);
         if (!trim(staged).empty()) {
             auto lines = split_lines(trim(staged));
@@ -715,15 +691,12 @@ void watch_engine::init_shadow_repo() {
     stage_all_nested_repos();
     if (skip_binary_)
         unstage_binaries();
-    log_("diff --cached --name-status ...");
     std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (!trim(staged).empty()) {
         if (cancelled())
             return;
         git({ "commit", "-m", "BaconSaver: initial snapshot" });
         log_("Initial snapshot committed.");
-    } else {
-        log_("Nothing to snapshot.");
     }
 }
 
@@ -748,15 +721,10 @@ void watch_engine::commit() {
     if (skip_binary_)
         unstage_binaries();
 
-    log_("diff --cached --name-only ...");
     std::string chk = git({ "diff", "--cached", "--name-only" }, false);
-    for (auto& line : split_lines(chk))
-        if (line.find("__pycache__") != std::string::npos || line.find(".pyc") != std::string::npos)
-            log_("TRACE git-staged: " + trim(line));
 
     if (overflow) {
         // Lost the change list — re-stage every nested repo to be safe.
-        log_("overflow — re-staging nested repos");
         for (auto& r : nested_roots_)
             stage_nested_repo(r);
     } else {
@@ -774,33 +742,25 @@ void watch_engine::commit() {
             else
                 dels.push_back(p);
         }
-        if (!adds.empty() || !dels.empty())
-            log_("staging nested files: " + std::to_string(adds.size()) + " adds, " + std::to_string(dels.size()) + " dels");
         stage_files(adds);
         remove_paths(dels);
     }
 
-    log_("diff --cached --name-status ...");
     std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (trim(staged).empty())
         return;
     if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0)
         return;
     auto lines = split_lines(trim(staged));
-    for (auto& line : lines)
-        log_("  " + trim(line));
     std::string ts = now_ts();
     git({ "commit", "-m", "BaconSaver " + ts });
     log_("[" + ts + "] Committed " + std::to_string(lines.size()) + " file(s).");
 }
 
 void watch_engine::thread_proc() {
-    trace_log("thread_proc: started");
     try {
         init_shadow_repo();
-        trace_log("thread_proc: init_shadow_repo returned");
     } catch (const std::exception& e) {
-        trace_log("thread_proc: caught " + std::string(e.what()));
         log_(std::string("thread_proc: caught ") + e.what());
         running_ = false;
         paused_ = false;
@@ -845,8 +805,6 @@ void watch_engine::thread_proc() {
         DWORD w = WaitForMultipleObjects(2, waits, FALSE, timeout);
 
         if (w == WAIT_OBJECT_0) {
-            trace_log("thread_proc: stop_event in watch loop");
-            log_("thread_proc: stop_event signaled, exiting watch loop");
             CancelIo(dir);
             break;
         }
