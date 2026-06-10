@@ -19,7 +19,7 @@ class watch_engine {
 public:
     watch_engine(
         const std::wstring& watch_path,
-        const std::wstring& shadows_base,
+        const std::wstring& shadow_path,
         log_fn log,
         const std::vector<std::string>& initial_patterns = {},
         bool skip_binary = false);
@@ -32,10 +32,12 @@ public:
 
     bool is_running() const { return running_; }
     bool is_paused() const { return paused_; }
+    bool is_stopping() const { return stopping_; }
     const std::wstring& watch_path() const { return watch_path_; }
     const std::wstring& shadow_path() const { return shadow_path_; }
     IgnoreFilter& ignore() { return ignore_; }
 
+    static std::wstring shadow_name(const std::wstring& watch_path);
     void sync_exclude();
 
 private:
@@ -47,6 +49,7 @@ private:
     HANDLE stop_event_ = nullptr;
     std::atomic<bool> running_{ false };
     std::atomic<bool> paused_{ false };
+    std::atomic<bool> stopping_{ false };
     bool skip_binary_ = false;
 
     // Directories that contain their own .git. Git would treat these as
@@ -60,7 +63,7 @@ private:
     void init_shadow_repo();
     void apply_perf_config();
     void commit();
-    std::string git(const std::vector<std::string>& args, bool check = true, DWORD timeout_ms = 30000);
+    std::string git(const std::vector<std::string>& args, bool check = true);
 
     void discover_nested_repos();
     void stage_all_nested_repos();
@@ -71,8 +74,6 @@ private:
     bool is_under_nested(const std::string& posix) const;
     bool is_binary_file(const std::string& rel_path) const;
     void unstage_binaries();
-
-    static std::wstring shadow_name(const std::wstring& watch_path);
 };
 
 struct commit_entry {

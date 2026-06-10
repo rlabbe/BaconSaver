@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "util.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -8,8 +9,6 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
-
-namespace {
 
 const std::vector<std::string> always_ignored = { ".git" };
 constexpr DWORD debounce_ms = 3000;
@@ -36,15 +35,6 @@ std::string path_utf8(const fs::path& p) {
     return wtoa(p.wstring());
 }
 
-std::string trim(const std::string& s) {
-    size_t start = 0, end = s.size();
-    while (start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r' || s[start] == '\n'))
-        ++start;
-    while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t' || s[end - 1] == '\r' || s[end - 1] == '\n'))
-        --end;
-    return s.substr(start, end - start);
-}
-
 std::vector<std::string> split_lines(const std::string& s) {
     std::vector<std::string> out;
     std::istringstream ss(s);
@@ -57,13 +47,10 @@ std::vector<std::string> split_lines(const std::string& s) {
     return out;
 }
 
-std::string now_ts() {
-    std::time_t t = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-    return buf;
+void trace_log(const std::string& msg) {
+    std::error_code ec;
+    std::ofstream f(app_dir() / "baconsaver.log", std::ios::app | std::ios::binary);
+    f << now_ts() << "  [trace] " << msg << "\n";
 }
 
 // Quote an argument for a Windows command line (CommandLineToArgvW rules).
@@ -100,6 +87,8 @@ struct git_result {
 
 // Run "git <args>" capturing raw stdout/stderr bytes. Never injects --git-dir;
 // callers pass whatever flags they need. Throws only if the process cannot start.
+// Uses a job object so that when the job handle is closed, git and all its
+// child processes are terminated — no orphans.
 git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, const wchar_t* cwd = nullptr,
                     HANDLE cancel_event = nullptr) {
     std::wstring cmd = L"git";
@@ -107,6 +96,12 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, cons
         cmd += L' ';
         cmd += quote_arg(atow(a));
     }
+
+    // Job object: closing this handle kills git and all children
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
+    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
 
     HANDLE out_r = nullptr, out_w = nullptr, err_r = nullptr, err_w = nullptr;
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
@@ -123,19 +118,83 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, cons
 
     std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
     cmd_buf.push_back(L'\0');
-    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd, &si, &pi)) {
+    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, cwd, &si, &pi)) {
         DWORD gle = GetLastError();
+        CloseHandle(job);
         CloseHandle(out_r);
         CloseHandle(out_w);
         CloseHandle(err_r);
         CloseHandle(err_w);
         throw std::runtime_error("Failed to run git (error " + std::to_string(gle) + ")");
     }
+    AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
     CloseHandle(out_w);
     CloseHandle(err_w);
-    CloseHandle(pi.hThread);
 
+    // Drain pipes while waiting so large output doesn't deadlock (pipe buffer fills
+    // -> git blocks on write -> we block on wait).
     git_result r;
+    DWORD deadline = timeout_ms ? GetTickCount() + timeout_ms : 0;
+    HANDLE handles[2] = { pi.hProcess, cancel_event ? cancel_event : pi.hProcess };
+    DWORD handle_count = cancel_event ? 2 : 1;
+    trace_log("git_exec: waiting, cancel_event=" + std::to_string((uintptr_t)cancel_event) + " timeout=" + std::to_string(timeout_ms));
+
+    for (;;) {
+        DWORD remain = 100;
+        if (deadline) {
+            DWORD now = GetTickCount();
+            if (now >= deadline) {
+                trace_log("git_exec: timeout reached");
+                TerminateProcess(pi.hProcess, 1);
+                r.code = 1;
+                r.err = "timeout or error";
+                break;
+            }
+            DWORD left = deadline - now;
+            if (left < remain)
+                remain = left;
+        }
+        DWORD which = WaitForMultipleObjects(handle_count, handles, FALSE, remain);
+        if (which == WAIT_OBJECT_0) {
+            trace_log("git_exec: process exited normally");
+            GetExitCodeProcess(pi.hProcess, &r.code);
+            break;
+        }
+        if (which == WAIT_OBJECT_0 + 1) {
+            trace_log("git_exec: cancelled via event");
+            TerminateProcess(pi.hProcess, 1);
+            r.code = 1;
+            r.err = "cancelled";
+            break;
+        }
+        // Drain pipes to prevent deadlock (pipe buffer full -> git blocks)
+        char buf[8192];
+        DWORD n = 0;
+        if (PeekNamedPipe(out_r, nullptr, 0, nullptr, &n, nullptr) && n) {
+            DWORD to_read = n > sizeof(buf) - 1 ? sizeof(buf) - 1 : n;
+            if (ReadFile(out_r, buf, to_read, &n, nullptr) && n)
+                r.out.append(buf, n);
+        }
+        if (PeekNamedPipe(err_r, nullptr, 0, nullptr, &n, nullptr) && n) {
+            DWORD to_read = n > sizeof(buf) - 1 ? sizeof(buf) - 1 : n;
+            if (ReadFile(err_r, buf, to_read, &n, nullptr) && n)
+                r.err.append(buf, n);
+        }
+    }
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(job); // kill all children
+
+    if (r.err == "cancelled") {
+        CloseHandle(out_r);
+        CloseHandle(err_r);
+        return r;
+    }
+
+    // Read remaining output
     char buf[8192];
     DWORD n = 0;
     while (ReadFile(out_r, buf, sizeof(buf), &n, nullptr) && n)
@@ -144,26 +203,6 @@ git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, cons
         r.err.append(buf, n);
     CloseHandle(out_r);
     CloseHandle(err_r);
-
-    if (cancel_event) {
-        HANDLE handles[2] = { pi.hProcess, cancel_event };
-        DWORD which = WaitForMultipleObjects(2, handles, FALSE, timeout_ms > 0 ? timeout_ms : INFINITE);
-        if (which == WAIT_OBJECT_0 + 1) {
-            TerminateProcess(pi.hProcess, 1);
-            r.code = 1;
-            r.err = "cancelled";
-        } else if (which == WAIT_OBJECT_0) {
-            GetExitCodeProcess(pi.hProcess, &r.code);
-        } else {
-            TerminateProcess(pi.hProcess, 1);
-            r.code = 1;
-            r.err = "timeout or error";
-        }
-    } else {
-        WaitForSingleObject(pi.hProcess, timeout_ms > 0 ? timeout_ms : INFINITE);
-        GetExitCodeProcess(pi.hProcess, &r.code);
-    }
-    CloseHandle(pi.hProcess);
     return r;
 }
 
@@ -172,15 +211,22 @@ void cleanup_stale_lock(const fs::path& git_dir, const log_fn& log) {
     std::error_code ec;
     if (!fs::exists(lock, ec))
         return;
-    auto ftime = fs::last_write_time(lock, ec);
-    if (ec)
-        return;
-    auto age = std::chrono::duration_cast<std::chrono::seconds>(fs::file_time_type::clock::now() - ftime).count();
-    if (age > 30) {
+
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (attempt > 0)
+            Sleep(200);
         fs::remove(lock, ec);
-        if (!ec)
-            log("Removed stale index.lock");
+        if (!ec) {
+            if (attempt > 0)
+                log("Removed stale index.lock (retry " + std::to_string(attempt) + ")");
+            else
+                log("Removed stale index.lock");
+            return;
+        }
     }
+    log("ERROR: cannot remove index.lock after 5 attempts: " + ec.message());
+    log("  " + path_utf8(lock));
+    log("  Close any other programs using this repo, or delete the file manually.");
 }
 
 const std::vector<std::string>& default_preset() {
@@ -190,8 +236,6 @@ const std::vector<std::string>& default_preset() {
     static const std::vector<std::string> empty;
     return empty;
 }
-
-} // anonymous namespace
 
 presets_t g_presets = {
     { "General", { ".svn", "x64", "*~", "*.TMP" } },
@@ -230,12 +274,17 @@ std::tuple<int, int, int> git_version() {
 // ---------------------------------------------------------------------------
 
 std::wstring watch_engine::shadow_name(const std::wstring& watch_path) {
+    fs::path p(watch_path);
+    std::wstring leaf = p.filename().wstring();
+    if (leaf.empty())
+        leaf = L"root";
     std::wstring result;
-    for (wchar_t c : watch_path)
-        if (iswalnum(c))
+    for (wchar_t c : leaf) {
+        if (iswalnum(c) || c == L'_' || c == L'-')
             result += c;
         else
             result += L'_';
+    }
     while (!result.empty() && result.back() == L'_')
         result.pop_back();
     return result;
@@ -243,12 +292,12 @@ std::wstring watch_engine::shadow_name(const std::wstring& watch_path) {
 
 watch_engine::watch_engine(
     const std::wstring& watch_path,
-    const std::wstring& shadows_base,
+    const std::wstring& shadow_path,
     log_fn log,
     const std::vector<std::string>& initial_patterns,
     bool skip_binary)
     : watch_path_(fs::absolute(fs::path(watch_path)).wstring()),
-      shadow_path_((fs::path(shadows_base) / shadow_name(watch_path)).wstring()), log_(std::move(log)),
+      shadow_path_(shadow_path), log_(std::move(log)),
       ignore_(fs::path(shadow_path_) / "ignore"), skip_binary_(skip_binary) {
     std::error_code ec;
     fs::create_directories(shadow_path_, ec);
@@ -282,31 +331,68 @@ void watch_engine::start() {
 }
 
 void watch_engine::stop() {
-    if (!running_)
+    if (!running_) {
+        log_("stop: not running");
         return;
+    }
+    if (stopping_) {
+        log_("stop: already stopping");
+        return;
+    }
+    stopping_ = true;
+    trace_log("stop: signalling stop_event");
+    log_("stop: signalling stop_event");
     if (stop_event_)
         SetEvent(stop_event_);
     if (thread_) {
-        WaitForSingleObject(thread_, INFINITE);
-        CloseHandle(thread_);
-        thread_ = nullptr;
+        trace_log("stop: waiting for thread");
+        log_("stop: waiting for thread");
+        for (;;) {
+            DWORD r = WaitForSingleObject(thread_, 250);
+            if (r == WAIT_OBJECT_0) {
+                CloseHandle(thread_);
+                thread_ = nullptr;
+                log_("stop: thread joined");
+                break;
+            }
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
     }
     running_ = false;
     paused_ = false;
+    cleanup_stale_lock(fs::path(shadow_path_) / ".git", log_);
     log_("Stopped: " + path_utf8(watch_path_));
 }
 
 void watch_engine::pause() {
     if (!running_ || paused_)
         return;
+    if (stopping_)
+        return;
+    stopping_ = true;
     if (stop_event_)
         SetEvent(stop_event_);
     if (thread_) {
-        WaitForSingleObject(thread_, INFINITE);
-        CloseHandle(thread_);
-        thread_ = nullptr;
+        for (;;) {
+            DWORD r = WaitForSingleObject(thread_, 250);
+            if (r == WAIT_OBJECT_0) {
+                CloseHandle(thread_);
+                thread_ = nullptr;
+                break;
+            }
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
     }
     paused_ = true;
+    stopping_ = false;
     log_("Paused: " + path_utf8(watch_path_));
 }
 
@@ -350,12 +436,13 @@ void watch_engine::sync_exclude() {
     }
 }
 
-std::string watch_engine::git(const std::vector<std::string>& args, bool check, DWORD timeout_ms) {
+std::string watch_engine::git(const std::vector<std::string>& args, bool check) {
     std::vector<std::string> full;
     full.push_back("--git-dir=" + path_utf8(fs::path(shadow_path_) / ".git"));
     full.push_back("--work-tree=" + path_utf8(watch_path_));
     full.insert(full.end(), args.begin(), args.end());
-    auto r = git_exec(full, timeout_ms, nullptr, stop_event_);
+    trace_log("git: " + full[2]);
+    auto r = git_exec(full, 0, nullptr, stop_event_);
     if (check && r.code != 0) {
         if (r.err == "cancelled")
             throw std::runtime_error("git cancelled");
@@ -388,9 +475,14 @@ void watch_engine::apply_perf_config() {
 // directory or a file, e.g. worktrees).  Must be called before `git add -A`.
 void watch_engine::discover_nested_repos() {
     std::error_code ec;
+    int count = 0;
     for (auto& entry : fs::directory_iterator(watch_path_, ec)) {
         if (ec)
             break;
+        if (++count % 1000 == 0 && WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
+            trace_log("discover_nested_repos: cancelled at entry " + std::to_string(count));
+            return;
+        }
         if (!entry.is_directory(ec))
             continue;
         if (!fs::exists(entry.path() / ".git", ec))
@@ -494,7 +586,7 @@ void watch_engine::stage_files(const std::vector<std::string>& add_posix) {
         std::vector<std::string> args = { gd, wt, "update-index", "--add", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(add_posix[j]);
-        auto r = git_exec(args, 60000, watch_path_.c_str());
+        auto r = git_exec(args, 60000, watch_path_.c_str(), stop_event_);
         if (r.code != 0 && !trim(r.err).empty())
             log_("update-index: " + trim(r.err));
     }
@@ -513,7 +605,7 @@ void watch_engine::remove_paths(const std::vector<std::string>& del_posix) {
         std::vector<std::string> args = { gd, wt, "rm", "-r", "--cached", "--ignore-unmatch", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(del_posix[j]);
-        git_exec(args, 60000, watch_path_.c_str());
+        git_exec(args, 60000, watch_path_.c_str(), stop_event_);
     }
 }
 
@@ -523,10 +615,15 @@ void watch_engine::stage_nested_repo(const std::string& root_posix) {
     std::vector<std::string> adds;
     auto pts = ignore_.patterns();
     std::error_code ec;
+    int count = 0;
     fs::recursive_directory_iterator it(abs_root, fs::directory_options::skip_permission_denied, ec), end;
     for (; it != end; it.increment(ec)) {
         if (ec)
             break;
+        if (++count % 1000 == 0 && WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
+            trace_log("stage_nested_repo: cancelled at entry " + std::to_string(count));
+            return;
+        }
         if (it->is_directory(ec)) {
             if (it->path().filename() == L".git")
                 it.disable_recursion_pending();
@@ -554,17 +651,21 @@ void watch_engine::init_shadow_repo() {
     auto cancelled = [&] { return WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0; };
 
     if (fs::exists(git_dir)) {
-        // Verify repo integrity
-        {
-            auto r = git_exec({ "--git-dir=" + path_utf8(git_dir), "fsck", "--no-dangling", "--no-progress" }, 60000);
-            if (r.code != 0)
-                log_("WARNING: git fsck found issues: " + trim(r.err));
-        }
+        log_("Checking existing repo...");
+        if (fs::exists(git_dir)) {
+        trace_log("init: discovering nested repos");
         discover_nested_repos();
+        trace_log("init: syncing exclude");
         sync_exclude();
+        trace_log("init: applying perf config");
         apply_perf_config();
-        if (cancelled())
+        trace_log("init: checking cancelled");
+        if (cancelled()) {
+            trace_log("init: cancelled after perf config");
             return;
+        }
+        log_("Initialized shadow repo: " + path_utf8(git_dir));
+        log_("Taking initial snapshot...");
         git({ "add", "-A" });
         if (cancelled())
             return;
@@ -572,6 +673,7 @@ void watch_engine::init_shadow_repo() {
         stage_all_nested_repos();
         if (skip_binary_)
             unstage_binaries();
+        log_("diff --cached --name-status ...");
         std::string staged = git({ "diff", "--cached", "--name-status" }, false);
         if (!trim(staged).empty()) {
             auto lines = split_lines(trim(staged));
@@ -583,10 +685,12 @@ void watch_engine::init_shadow_repo() {
         }
         return;
     }
+    }
 
     std::error_code ec;
     fs::create_directories(shadow, ec);
-    auto init = git_exec({ "init", path_utf8(shadow) }, 30000);
+    log_("Creating new shadow repo...");
+    auto init = git_exec({ "init", path_utf8(shadow) }, 30000, nullptr, stop_event_);
     if (init.code != 0)
         throw std::runtime_error("git init failed:\n" + init.err);
     if (cancelled())
@@ -611,6 +715,7 @@ void watch_engine::init_shadow_repo() {
     stage_all_nested_repos();
     if (skip_binary_)
         unstage_binaries();
+    log_("diff --cached --name-status ...");
     std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (!trim(staged).empty()) {
         if (cancelled())
@@ -643,6 +748,7 @@ void watch_engine::commit() {
     if (skip_binary_)
         unstage_binaries();
 
+    log_("diff --cached --name-only ...");
     std::string chk = git({ "diff", "--cached", "--name-only" }, false);
     for (auto& line : split_lines(chk))
         if (line.find("__pycache__") != std::string::npos || line.find(".pyc") != std::string::npos)
@@ -650,6 +756,7 @@ void watch_engine::commit() {
 
     if (overflow) {
         // Lost the change list — re-stage every nested repo to be safe.
+        log_("overflow — re-staging nested repos");
         for (auto& r : nested_roots_)
             stage_nested_repo(r);
     } else {
@@ -667,10 +774,13 @@ void watch_engine::commit() {
             else
                 dels.push_back(p);
         }
+        if (!adds.empty() || !dels.empty())
+            log_("staging nested files: " + std::to_string(adds.size()) + " adds, " + std::to_string(dels.size()) + " dels");
         stage_files(adds);
         remove_paths(dels);
     }
 
+    log_("diff --cached --name-status ...");
     std::string staged = git({ "diff", "--cached", "--name-status" }, false);
     if (trim(staged).empty())
         return;
@@ -685,10 +795,13 @@ void watch_engine::commit() {
 }
 
 void watch_engine::thread_proc() {
+    trace_log("thread_proc: started");
     try {
         init_shadow_repo();
+        trace_log("thread_proc: init_shadow_repo returned");
     } catch (const std::exception& e) {
-        log_(std::string("ERROR: ") + e.what());
+        trace_log("thread_proc: caught " + std::string(e.what()));
+        log_(std::string("thread_proc: caught ") + e.what());
         running_ = false;
         paused_ = false;
         return;
@@ -732,6 +845,8 @@ void watch_engine::thread_proc() {
         DWORD w = WaitForMultipleObjects(2, waits, FALSE, timeout);
 
         if (w == WAIT_OBJECT_0) {
+            trace_log("thread_proc: stop_event in watch loop");
+            log_("thread_proc: stop_event signaled, exiting watch loop");
             CancelIo(dir);
             break;
         }

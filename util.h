@@ -35,3 +35,24 @@ inline fs::path app_dir() {
     DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
     return fs::path(std::wstring(buf, n)).parent_path();
 }
+
+inline fs::path config_path() {
+    return app_dir() / "config.json";
+}
+
+inline std::string trim(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && (unsigned char)s[a] <= ' ')
+        ++a;
+    while (b > a && (unsigned char)s[b - 1] <= ' ')
+        --b;
+    return s.substr(a, b - a);
+}
+
+inline std::string now_ts() {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char buf[64];
+    sprintf_s(buf, "%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    return buf;
+}

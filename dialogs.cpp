@@ -17,7 +17,6 @@
 
 #pragma comment(lib, "comctl32.lib")
 
-namespace {
 // ---- generic (shared by simple dialogs) ----
 enum {
     ID_SIMPLE_TEXT = 100
@@ -32,6 +31,7 @@ enum {
     IDC_ADD_REMOVE = 402,
     IDC_ADD_PREVIEW = 403,
     IDC_ADD_SKIP_BINARY = 500,
+    IDC_ADD_LOC_LIST = 501,
 };
 
 // ---- Ignore dialog ----
@@ -59,14 +59,12 @@ enum {
     IDC_RES_EXPORT = 512,
     IDC_RES_FILTER = 513,
 };
-} // anonymous namespace
 #pragma comment(lib, "shlwapi.lib")
 
 // ---------------------------------------------------------------------------
 // Colors (matching the PyQt dark theme)
 // ---------------------------------------------------------------------------
 
-namespace {
 
 const COLORREF COL_BG = RGB(0x1e, 0x1e, 0x1e);
 const COLORREF COL_TEXT = RGB(0xcc, 0xcc, 0xcc);
@@ -78,15 +76,6 @@ const COLORREF COL_DEL = RGB(0xf4, 0x47, 0x47);
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
-
-std::string trim(const std::string& s) {
-    size_t a = 0, b = s.size();
-    while (a < b && (unsigned char)s[a] <= ' ')
-        ++a;
-    while (b > a && (unsigned char)s[b - 1] <= ' ')
-        --b;
-    return s.substr(a, b - a);
-}
 
 bool fnmatch(const std::string& pattern, const std::string& str) {
     if (pattern.find('[') != std::string::npos)
@@ -146,12 +135,14 @@ void run_modal(HWND parent, HWND dlg) {
     SetForegroundWindow(parent);
 }
 
+
 // Compute the window size needed to obtain a given client area.
-SIZE window_size_for_client(int cw, int ch, DWORD style, DWORD ex_style) {
+SIZE window_size_for_client(int cw, int ch, DWORD style, DWORD ex_style, HWND ref) {
     RECT r = { 0, 0, cw, ch };
-    AdjustWindowRectEx(&r, style, FALSE, ex_style);
+    AdjustWindowRectExForDpi(&r, style, FALSE, ex_style, dpi_for(ref));
     return SIZE{ r.right - r.left, r.bottom - r.top };
 }
+
 
 std::vector<std::wstring> listbox_items(HWND lb) {
     std::vector<std::wstring> out;
@@ -283,7 +274,7 @@ bool show_text_input(HWND parent, const std::wstring& title, const std::wstring&
     GetWindowRect(parent, &pr);
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     int cw = scale_px(364, parent), ch = scale_px(112, parent);
-    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME);
+    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME, parent);
     int x = pr.left + scale_px(60, parent), y = pr.top + scale_px(80, parent);
     HWND dlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME, L"BaconInputDlg", title.c_str(), style, x, y, ws.cx, ws.cy, parent, nullptr,
@@ -366,15 +357,15 @@ void show_text_view(HWND parent, const std::wstring& title, const std::wstring& 
     DeleteObject(mono);
 }
 
-} // anonymous namespace
 
 // ===========================================================================
 // Add Directory dialog
 // ===========================================================================
 
-namespace {
 
 struct add_state {
+    const std::vector<std::wstring>* backup_locations = nullptr;
+    std::wstring* out_shadows_base = nullptr;
     std::wstring path;
     bool have_path = false;
     bool ok = false;
@@ -383,6 +374,7 @@ struct add_state {
     HWND patterns = nullptr;
     HWND ok_btn = nullptr;
     HWND preview_btn = nullptr;
+    HWND loc_list = nullptr;
     std::vector<HWND> preset_checks; // index aligns with g_presets
     std::vector<std::string> result; // captured before the window is destroyed
 };
@@ -498,43 +490,54 @@ LRESULT CALLBACK add_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         auto s = [=](int px) { return scale_px(px, hwnd); };
 
-        make(L"STATIC", L"Directory:", 0, s(12), s(14), s(65), s(18), hwnd, -1);
-        st->dir_label = make(L"STATIC", L"<none>", SS_PATHELLIPSIS, s(80), s(14), s(320), s(18), hwnd, -1);
-        make(L"BUTTON", L"Browse...", WS_TABSTOP, s(406), s(10), s(90), s(26), hwnd, IDC_ADD_BROWSE);
+        int y_off = 0;
+        if (st->backup_locations && st->backup_locations->size() > 1) {
+            make(L"STATIC", L"Backup location:", 0, s(12), s(12), s(100), s(18), hwnd, -1);
+            st->loc_list = make(L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
+                s(12), s(30), s(470), s(60), hwnd, IDC_ADD_LOC_LIST);
+            for (auto& loc : *st->backup_locations)
+                SendMessageW(st->loc_list, LB_ADDSTRING, 0, (LPARAM)loc.c_str());
+            SendMessageW(st->loc_list, LB_SETCURSEL, 0, 0);
+            y_off = s(30) + s(68);
+        }
 
-        make(L"STATIC", L"Presets:", 0, s(12), s(48), s(60), s(18), hwnd, -1);
+        make(L"STATIC", L"Directory:", 0, s(12), y_off + s(14), s(65), s(18), hwnd, -1);
+        st->dir_label = make(L"STATIC", L"<none>", SS_PATHELLIPSIS, s(80), y_off + s(14), s(320), s(18), hwnd, -1);
+        make(L"BUTTON", L"Browse...", WS_TABSTOP, s(406), y_off + s(10), s(90), s(26), hwnd, IDC_ADD_BROWSE);
+
+        make(L"STATIC", L"Presets:", 0, s(12), y_off + s(48), s(60), s(18), hwnd, -1);
         int px = s(78);
         for (size_t i = 0; i < g_presets.size(); ++i) {
             HWND cb = make(
-                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP | BS_AUTOCHECKBOX, px, s(46), s(90), s(22),
+                L"BUTTON", to_wide(g_presets[i].first).c_str(), WS_TABSTOP | BS_AUTOCHECKBOX, px, y_off + s(46), s(90), s(22),
                 hwnd, IDC_ADD_PRESET_BASE + (int)i);
             st->preset_checks.push_back(cb);
             px += s(96);
         }
 
-        make(L"BUTTON", L"Skip binary files", WS_TABSTOP | BS_AUTOCHECKBOX, s(12), s(76), s(160), s(22), hwnd,
+        make(L"BUTTON", L"Skip binary files", WS_TABSTOP | BS_AUTOCHECKBOX, s(12), y_off + s(76), s(160), s(22), hwnd,
             IDC_ADD_SKIP_BINARY);
 
         make(L"STATIC",
              L"Patterns without / match any path component.\r\n"
              L"Patterns with / match the full relative path.\r\n"
              L"Wildcards:  *  ?  [seq]",
-             0, s(12), s(104), s(480), s(52), hwnd, -1);
+             0, s(12), y_off + s(104), s(480), s(52), hwnd, -1);
 
         st->patterns = make(
-            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, s(12), s(160), s(484), s(220), hwnd,
+            L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, s(12), y_off + s(160), s(484), s(220), hwnd,
             IDC_ADD_PATTERNS);
 
-        make(L"BUTTON", L"Add...", WS_TABSTOP, s(12), s(388), s(80), s(26), hwnd, IDC_ADD_ADD);
-        make(L"BUTTON", L"Remove", WS_TABSTOP, s(98), s(388), s(80), s(26), hwnd, IDC_ADD_REMOVE);
+        make(L"BUTTON", L"Add...", WS_TABSTOP, s(12), y_off + s(388), s(80), s(26), hwnd, IDC_ADD_ADD);
+        make(L"BUTTON", L"Remove", WS_TABSTOP, s(98), y_off + s(388), s(80), s(26), hwnd, IDC_ADD_REMOVE);
 
-        st->preview_btn = make(L"BUTTON", L"Preview Files...", WS_TABSTOP, s(12), s(426), s(130), s(26), hwnd,
+        st->preview_btn = make(L"BUTTON", L"Preview Files...", WS_TABSTOP, s(12), y_off + s(426), s(130), s(26), hwnd,
                                IDC_ADD_PREVIEW);
         EnableWindow(st->preview_btn, FALSE);
 
-        st->ok_btn = make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, s(320), s(426), s(80), s(26), hwnd, IDOK);
+        st->ok_btn = make(L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, s(320), y_off + s(426), s(80), s(26), hwnd, IDOK);
         EnableWindow(st->ok_btn, FALSE);
-        make(L"BUTTON", L"Cancel", WS_TABSTOP, s(414), s(426), s(80), s(26), hwnd, IDCANCEL);
+        make(L"BUTTON", L"Cancel", WS_TABSTOP, s(414), y_off + s(426), s(80), s(26), hwnd, IDCANCEL);
 
         // All presets checked by default
         for (size_t i = 0; i < g_presets.size(); ++i)
@@ -587,6 +590,13 @@ LRESULT CALLBACK add_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == IDOK) {
             if (!st->have_path)
                 return 0;
+            if (st->loc_list && st->backup_locations && st->out_shadows_base) {
+                int sel = (int)SendMessageW(st->loc_list, LB_GETCURSEL, 0, 0);
+                if (sel >= 0 && sel < (int)st->backup_locations->size())
+                    *st->out_shadows_base = (*st->backup_locations)[sel];
+                else
+                    *st->out_shadows_base = (*st->backup_locations)[0];
+            }
             st->result = listbox_get_utf8(st->patterns);
             st->skip_binary = (SendMessageW(GetDlgItem(hwnd, IDC_ADD_SKIP_BINARY), BM_GETCHECK, 0, 0) == BST_CHECKED);
             st->ok = true;
@@ -604,10 +614,11 @@ LRESULT CALLBACK add_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-} // anonymous namespace
 
 bool show_add_directory_dialog(
-    HWND parent, std::wstring& out_path, std::vector<std::string>& out_patterns, bool& out_skip_binary) {
+    HWND parent, const std::vector<std::wstring>& backup_locations,
+    std::wstring& out_path, std::vector<std::string>& out_patterns, bool& out_skip_binary,
+    std::wstring& out_shadows_base) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW wc = {};
@@ -620,22 +631,25 @@ bool show_add_directory_dialog(
         registered = true;
     }
     add_state st;
+    st.backup_locations = &backup_locations;
+    st.out_shadows_base = &out_shadows_base;
+    int ch_base = 470;
+    if (backup_locations.size() > 1)
+        ch_base = 470 + 30 + 68;
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    int cw = scale_px(512, parent), ch = scale_px(470, parent);
-    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME);
-    HWND dlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, L"BaconAddDlg", L"Add Watched Directory", style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx,
-        ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
-    // Center on parent
-    RECT pr, dr;
+    int cw = scale_px(512, parent), ch = scale_px(ch_base, parent);
+    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME, parent);
+    RECT pr;
     GetWindowRect(parent, &pr);
-    GetWindowRect(dlg, &dr);
-    int w = dr.right - dr.left, h = dr.bottom - dr.top;
-    SetWindowPos(
-        dlg, nullptr, pr.left + ((pr.right - pr.left) - w) / 2, pr.top + ((pr.bottom - pr.top) - h) / 2, 0, 0,
-        SWP_NOSIZE | SWP_NOZORDER);
+    int x = pr.left + ((pr.right - pr.left) - ws.cx) / 2;
+    int y = pr.top + ((pr.bottom - pr.top) - ws.cy) / 2;
+    HWND dlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, L"BaconAddDlg", L"Add Watched Directory", style, x, y, ws.cx, ws.cy, parent, nullptr,
+        GetModuleHandleW(nullptr), &st);
     run_modal(parent, dlg);
     if (st.ok) {
+        if (backup_locations.size() == 1)
+            out_shadows_base = backup_locations[0];
         out_path = st.path;
         out_patterns = st.result;
         out_skip_binary = st.skip_binary;
@@ -647,7 +661,6 @@ bool show_add_directory_dialog(
 // Ignore dialog
 // ===========================================================================
 
-namespace {
 
 struct ignore_state {
     bool ok = false;
@@ -740,7 +753,6 @@ LRESULT CALLBACK ignore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-} // anonymous namespace
 
 bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current, std::vector<std::string>& out_patterns) {
     static bool registered = false;
@@ -757,7 +769,7 @@ bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current, st
     ignore_state st;
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     int cw = scale_px(462, parent), ch = scale_px(380, parent);
-    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME);
+    SIZE ws = window_size_for_client(cw, ch, style, WS_EX_DLGMODALFRAME, parent);
     HWND dlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME, L"BaconIgnoreDlg", L"Edit Ignore Patterns", style, CW_USEDEFAULT, CW_USEDEFAULT, ws.cx,
         ws.cy, parent, nullptr, GetModuleHandleW(nullptr), &st);
@@ -779,11 +791,6 @@ bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current, st
 // Restore dialog
 // ===========================================================================
 
-namespace {
-
-fs::path config_path() {
-    return app_dir() / "config.json";
-}
 
 bool load_config(json::value& out) {
     std::ifstream in(config_path(), std::ios::binary);
@@ -1496,7 +1503,6 @@ LRESULT CALLBACK restore_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-} // anonymous namespace
 
 void show_restore_dialog(HWND parent, const std::wstring& watch_path, const std::wstring& shadow_path) {
     LoadLibraryW(L"Msftedit.dll");
