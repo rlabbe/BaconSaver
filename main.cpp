@@ -1,6 +1,9 @@
+#include "config.h"
 #include "dialogs.h"
 #include "engine.h"
+#include "git.h"
 #include "json.h"
+#include "log.h"
 #include "util.h"
 
 #include <commctrl.h>
@@ -23,7 +26,6 @@
 
 const wchar_t* MAIN_CLASS = L"BaconSaverMain";
 const wchar_t* MUTEX_NAME = L"BaconSaver-SingleInstance-Mutex";
-const UINT WM_APP_LOG = WM_APP + 1;
 const UINT WM_TRAYICON = WM_APP + 2;
 
 const COLORREF COL_BG = RGB(0x1e, 0x1e, 0x1e);
@@ -71,71 +73,10 @@ NOTIFYICONDATAW g_nid = {};
 UINT g_show_msg = 0; // registered message used to surface a second instance
 
 // ---------------------------------------------------------------------------
-// Logging
+// Config persistence
 // ---------------------------------------------------------------------------
 
-void file_log(const std::string& msg) {
-    std::error_code ec;
-    fs::path dir = app_dir();
-    fs::create_directories(dir, ec);
-    std::ofstream f(dir / "baconsaver.log", std::ios::app | std::ios::binary);
-    f << now_ts() << "  " << msg << "\n";
-}
-
-void console_update_scroll() {
-    int lines = (int)SendMessageW(g_console, EM_GETLINECOUNT, 0, 0);
-    RECT rc;
-    GetClientRect(g_console, &rc);
-    HDC dc = GetDC(g_console);
-    HFONT f = (HFONT)SendMessageW(g_console, WM_GETFONT, 0, 0);
-    TEXTMETRICW tm = {};
-    if (dc && f) {
-        SelectObject(dc, f);
-        GetTextMetricsW(dc, &tm);
-    }
-    if (dc)
-        ReleaseDC(g_console, dc);
-    int visible = rc.bottom / (tm.tmHeight > 0 ? tm.tmHeight : 16);
-    ShowScrollBar(g_console, SB_VERT, lines > visible);
-}
-
-void console_append(const std::wstring& line) {
-    int len = GetWindowTextLengthW(g_console);
-    SendMessageW(g_console, EM_SETSEL, len, len);
-    std::wstring l = line + L"\r\n";
-    SendMessageW(g_console, EM_REPLACESEL, FALSE, (LPARAM)l.c_str());
-    console_update_scroll();
-}
-
-void log_local(const std::string& msg) {
-    console_append(to_wide("[BaconSaver] " + msg));
-    file_log("[BaconSaver] " + msg);
-}
-
-// Engine callback factory — thread-safe (posts to the UI thread).
-log_fn make_log(const std::wstring& path) {
-    std::string label = to_utf8(fs::path(path).filename().wstring());
-    return [label](const std::string& msg) {
-        auto* s = new std::string("[" + label + "] " + msg);
-        if (!PostMessageW(g_main, WM_APP_LOG, 0, (LPARAM)s))
-            delete s;
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-bool load_config_value(json::value& out) {
-    std::ifstream in(config_path(), std::ios::binary);
-    if (!in)
-        return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return json::parse(ss.str(), out);
-}
-
-void save_config();
+void save_state();
 
 void start_pending_cleanup() {
     if (g_pending_deletions.empty())
@@ -155,7 +96,7 @@ void start_pending_cleanup() {
             auto it = std::find(g_pending_deletions.begin(), g_pending_deletions.end(), p);
             if (it != g_pending_deletions.end()) {
                 g_pending_deletions.erase(it);
-                save_config();
+                save_state();
             }
         }
     }).detach();
@@ -203,13 +144,13 @@ std::wstring make_shadow_path(const std::wstring& watch_path, const std::wstring
     return shadow;
 }
 
-void save_config() {
+void save_state() {
     for (auto& loc : g_backup_locations) {
         std::error_code ec;
         fs::create_directories(loc, ec);
     }
     json::value cfg;
-    if (!load_config_value(cfg))
+    if (!load_config(cfg))
         cfg = json::value::make_object();
     json::value arr = json::value::make_array();
     for (auto& e : g_entries) {
@@ -257,13 +198,12 @@ void save_config() {
             pd.arr->push_back(json::value(to_utf8(p)));
         cfg.set("pending_deletions", pd);
     }
-    std::ofstream out(config_path(), std::ios::binary);
-    out << json::dump(cfg, 2);
+    save_config(cfg);
 }
 
-void load_config() {
+void load_state() {
     json::value cfg;
-    if (!load_config_value(cfg))
+    if (!load_config(cfg))
         return;
     if (auto* pr = cfg.find("presets")) {
         if (pr->is_array() && pr->arr) {
@@ -408,7 +348,7 @@ LRESULT CALLBACK loc_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             if (!dup) {
                                 g_backup_locations.push_back(abs);
                                 SendMessageW(st->lb, LB_ADDSTRING, 0, (LPARAM)abs.c_str());
-                                save_config();
+                                save_state();
                             }
                         }
                         item->Release();
@@ -423,7 +363,7 @@ LRESULT CALLBACK loc_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (sel >= 0 && sel < (int)g_backup_locations.size() && g_backup_locations.size() > 1) {
                 g_backup_locations.erase(g_backup_locations.begin() + sel);
                 SendMessageW(st->lb, LB_DELETESTRING, sel, 0);
-                save_config();
+                save_state();
             }
             return 0;
         }
@@ -518,7 +458,7 @@ void add_directory() {
     std::wstring shadow = make_shadow_path(path, shadows_base);
     start_engine(path, shadow, patterns, skip_binary);
     log_local("Added: " + to_utf8(path));
-    save_config();
+    save_state();
 }
 
 void remove_directory() {
@@ -549,12 +489,12 @@ void remove_directory() {
     g_entries.erase(g_entries.begin() + idx);
     SendMessageW(g_list, LB_DELETESTRING, idx, 0);
     log_local("Removed: " + to_utf8(path));
-    save_config();
+    save_state();
     update_status();
 
     // Mark for background deletion — reaps orphaned dirs even if app shuts down before thread finishes.
     g_pending_deletions.push_back(shadow);
-    save_config();
+    save_state();
     start_pending_cleanup();
 
     g_busy = false;
@@ -581,7 +521,7 @@ void toggle_pause() {
         e->paused = true;
         list_set_text(idx, e->path + L"  (paused)");
     }
-    save_config();
+    save_state();
     g_busy = false;
 }
 
@@ -660,7 +600,7 @@ void quit_app(HWND) {
     g_busy = true;
     file_log("quit_app: shutting down, " + std::to_string(g_entries.size()) + " engines");
     tray_remove();
-    save_config();
+    save_state();
     for (int i = (int)g_entries.size() - 1; i >= 0; --i) {
         if (g_entries[i]->engine->is_stopping()) {
             file_log("quit_app: engine " + std::to_string(i) + " already stopping, skip");
@@ -928,7 +868,7 @@ LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         quit_app(hwnd);
         return 0;
     case WM_DESTROY:
-        save_config();
+        save_state();
         if (g_mono_font)
             DeleteObject(g_mono_font);
         return 0;
@@ -971,7 +911,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     int main_x = CW_USEDEFAULT, main_y = CW_USEDEFAULT;
     {
         json::value cfg;
-        if (load_config_value(cfg)) {
+        if (load_config(cfg)) {
             if (auto* s = cfg.find("main_size")) {
                 if (s->is_array() && s->arr && s->arr->size() >= 4) {
                     main_x = (*s->arr)[0].as_int(main_x);
@@ -990,7 +930,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         nullptr, nullptr, hInstance, nullptr);
 
     file_log("BaconSaver started");
-    load_config();
+    load_state();
     for (auto& loc : g_backup_locations)
         file_log("Repo location: " + to_utf8(loc));
     for (auto& p : g_pending_deletions)

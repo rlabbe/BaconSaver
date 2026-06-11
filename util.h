@@ -1,9 +1,12 @@
 #pragma once
 #include <filesystem>
 #include <string>
+#include <vector>
 #include <windows.h>
 
 namespace fs = std::filesystem;
+
+// ---- Encoding ----
 
 inline std::string to_utf8(const std::wstring& ws) {
     if (ws.empty())
@@ -23,12 +26,20 @@ inline std::wstring to_wide(const std::string& s) {
     return ws;
 }
 
+inline std::string path_utf8(const fs::path& p) {
+    return to_utf8(p.wstring());
+}
+
+// ---- DPI ----
+
 inline int dpi_for(HWND hwnd) {
     return GetDpiForWindow(hwnd);
 }
 inline int scale_px(int px, HWND hwnd) {
     return MulDiv(px, dpi_for(hwnd), 96);
 }
+
+// ---- Paths ----
 
 inline fs::path app_dir() {
     wchar_t buf[MAX_PATH];
@@ -39,6 +50,8 @@ inline fs::path app_dir() {
 inline fs::path config_path() {
     return app_dir() / "config.json";
 }
+
+// ---- Strings ----
 
 inline std::string trim(const std::string& s) {
     size_t a = 0, b = s.size();
@@ -56,3 +69,12 @@ inline std::string now_ts() {
     sprintf_s(buf, "%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     return buf;
 }
+
+// ---- Non-inline helpers ----
+
+std::vector<std::string> split_lines(const std::string& s);
+bool fnmatch(const std::string& pattern, const std::string& str);
+
+// ---- Always-ignored paths ----
+
+inline const std::vector<std::string> always_ignored = { ".git" };

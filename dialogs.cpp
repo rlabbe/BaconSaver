@@ -1,5 +1,7 @@
 #include "dialogs.h"
+#include "config.h"
 #include "engine.h"
+#include "git.h"
 #include "json.h"
 #include "util.h"
 
@@ -76,29 +78,6 @@ const COLORREF COL_DEL = RGB(0xf4, 0x47, 0x47);
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
-
-bool fnmatch(const std::string& pattern, const std::string& str) {
-    if (pattern.find('[') != std::string::npos)
-        return PathMatchSpecA(str.c_str(), pattern.c_str()) == TRUE;
-    size_t pi = 0, si = 0, pstar = std::string::npos, sstar = 0;
-    while (si < str.size()) {
-        if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == str[si])) {
-            ++pi;
-            ++si;
-        } else if (pi < pattern.size() && pattern[pi] == '*') {
-            pstar = pi++;
-            sstar = si;
-        } else if (pstar != std::string::npos) {
-            pi = pstar + 1;
-            si = ++sstar;
-        } else {
-            return false;
-        }
-    }
-    while (pi < pattern.size() && pattern[pi] == '*')
-        ++pi;
-    return pi == pattern.size();
-}
 
 HFONT ui_font(HWND hwnd) {
     int dpi = dpi_for(hwnd);
@@ -791,20 +770,6 @@ bool show_ignore_dialog(HWND parent, const std::vector<std::string>& current, st
 // Restore dialog
 // ===========================================================================
 
-
-bool load_config(json::value& out) {
-    std::ifstream in(config_path(), std::ios::binary);
-    if (!in)
-        return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return json::parse(ss.str(), out);
-}
-
-void save_config(const json::value& v) {
-    std::ofstream out(config_path(), std::ios::binary);
-    out << json::dump(v, 2);
-}
 
 std::string fmt_timestamp(const std::string& raw) {
     // '2026-05-05 14:03:53 -0700' -> '2026-05-05  14:03:53'

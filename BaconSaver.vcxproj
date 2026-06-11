@@ -88,17 +88,24 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="config.cpp" />
     <ClCompile Include="engine.cpp" />
+    <ClCompile Include="git.cpp" />
     <ClCompile Include="ignore_filter.cpp" />
+    <ClCompile Include="log.cpp" />
     <ClCompile Include="dialogs.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="util.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="config.h" />
     <ClInclude Include="engine.h" />
+    <ClInclude Include="git.h" />
     <ClInclude Include="ignore_filter.h" />
+    <ClInclude Include="log.h" />
     <ClInclude Include="dialogs.h" />
-    <ClInclude Include="util.h" />
     <ClInclude Include="json.h" />
+    <ClInclude Include="util.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />

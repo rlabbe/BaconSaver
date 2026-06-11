@@ -1,4 +1,6 @@
 #include "engine.h"
+#include "config.h"
+#include "git.h"
 #include "util.h"
 #include <algorithm>
 #include <cctype>
@@ -10,219 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 
-const std::vector<std::string> always_ignored = { ".git" };
 constexpr DWORD debounce_ms = 3000;
-
-std::string wtoa(const std::wstring& ws) {
-    if (ws.empty())
-        return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string s(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &s[0], len, nullptr, nullptr);
-    return s;
-}
-
-std::wstring atow(const std::string& s) {
-    if (s.empty())
-        return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring ws(len, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &ws[0], len);
-    return ws;
-}
-
-std::string path_utf8(const fs::path& p) {
-    return wtoa(p.wstring());
-}
-
-std::vector<std::string> split_lines(const std::string& s) {
-    std::vector<std::string> out;
-    std::istringstream ss(s);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        out.push_back(line);
-    }
-    return out;
-}
-
-void trace_log(const std::string& msg) {
-    std::error_code ec;
-    std::ofstream f(app_dir() / "baconsaver.log", std::ios::app | std::ios::binary);
-    f << now_ts() << "  [trace] " << msg << "\n";
-}
-
-// Quote an argument for a Windows command line (CommandLineToArgvW rules).
-std::wstring quote_arg(const std::wstring& arg) {
-    if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos)
-        return arg;
-    std::wstring out = L"\"";
-    for (size_t i = 0;; ++i) {
-        size_t backslashes = 0;
-        while (i < arg.size() && arg[i] == L'\\') {
-            ++i;
-            ++backslashes;
-        }
-        if (i == arg.size()) {
-            out.append(backslashes * 2, L'\\');
-            break;
-        } else if (arg[i] == L'"') {
-            out.append(backslashes * 2 + 1, L'\\');
-            out += L'"';
-        } else {
-            out.append(backslashes, L'\\');
-            out += arg[i];
-        }
-    }
-    out += L'"';
-    return out;
-}
-
-struct git_result {
-    DWORD code = 0;
-    std::string out;
-    std::string err;
-};
-
-// Run "git <args>" capturing raw stdout/stderr bytes. Never injects --git-dir;
-// callers pass whatever flags they need. Throws only if the process cannot start.
-// Uses a job object so that when the job handle is closed, git and all its
-// child processes are terminated — no orphans.
-git_result git_exec(const std::vector<std::string>& args, DWORD timeout_ms, const wchar_t* cwd = nullptr,
-                    HANDLE cancel_event = nullptr) {
-    std::wstring cmd = L"git";
-    for (auto& a : args) {
-        cmd += L' ';
-        cmd += quote_arg(atow(a));
-    }
-
-    // Job object: closing this handle kills git and all children
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
-    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
-
-    HANDLE out_r = nullptr, out_w = nullptr, err_r = nullptr, err_w = nullptr;
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
-    CreatePipe(&out_r, &out_w, &sa, 0);
-    CreatePipe(&err_r, &err_w, &sa, 0);
-    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si = { sizeof(si) };
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = out_w;
-    si.hStdError = err_w;
-    PROCESS_INFORMATION pi = {};
-
-    std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
-    cmd_buf.push_back(L'\0');
-    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, cwd, &si, &pi)) {
-        DWORD gle = GetLastError();
-        CloseHandle(job);
-        CloseHandle(out_r);
-        CloseHandle(out_w);
-        CloseHandle(err_r);
-        CloseHandle(err_w);
-        throw std::runtime_error("Failed to run git (error " + std::to_string(gle) + ")");
-    }
-    AssignProcessToJobObject(job, pi.hProcess);
-    ResumeThread(pi.hThread);
-    CloseHandle(pi.hThread);
-    CloseHandle(out_w);
-    CloseHandle(err_w);
-
-    // Drain pipes while waiting so large output doesn't deadlock (pipe buffer fills
-    // -> git blocks on write -> we block on wait).
-    git_result r;
-    DWORD deadline = timeout_ms ? GetTickCount() + timeout_ms : 0;
-    HANDLE handles[2] = { pi.hProcess, cancel_event ? cancel_event : pi.hProcess };
-    DWORD handle_count = cancel_event ? 2 : 1;
-    for (;;) {
-        DWORD remain = 100;
-        if (deadline) {
-            DWORD now = GetTickCount();
-            if (now >= deadline) {
-                TerminateProcess(pi.hProcess, 1);
-                r.code = 1;
-                r.err = "timeout or error";
-                break;
-            }
-            DWORD left = deadline - now;
-            if (left < remain)
-                remain = left;
-        }
-        DWORD which = WaitForMultipleObjects(handle_count, handles, FALSE, remain);
-        if (which == WAIT_OBJECT_0) {
-            GetExitCodeProcess(pi.hProcess, &r.code);
-            break;
-        }
-        if (which == WAIT_OBJECT_0 + 1) {
-            TerminateProcess(pi.hProcess, 1);
-            r.code = 1;
-            r.err = "cancelled";
-            break;
-        }
-        // Drain pipes to prevent deadlock (pipe buffer full -> git blocks)
-        char buf[8192];
-        DWORD n = 0;
-        if (PeekNamedPipe(out_r, nullptr, 0, nullptr, &n, nullptr) && n) {
-            DWORD to_read = n > sizeof(buf) - 1 ? sizeof(buf) - 1 : n;
-            if (ReadFile(out_r, buf, to_read, &n, nullptr) && n)
-                r.out.append(buf, n);
-        }
-        if (PeekNamedPipe(err_r, nullptr, 0, nullptr, &n, nullptr) && n) {
-            DWORD to_read = n > sizeof(buf) - 1 ? sizeof(buf) - 1 : n;
-            if (ReadFile(err_r, buf, to_read, &n, nullptr) && n)
-                r.err.append(buf, n);
-        }
-    }
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(job); // kill all children
-
-    if (r.err == "cancelled") {
-        CloseHandle(out_r);
-        CloseHandle(err_r);
-        return r;
-    }
-
-    // Read remaining output
-    char buf[8192];
-    DWORD n = 0;
-    while (ReadFile(out_r, buf, sizeof(buf), &n, nullptr) && n)
-        r.out.append(buf, n);
-    while (ReadFile(err_r, buf, sizeof(buf), &n, nullptr) && n)
-        r.err.append(buf, n);
-    CloseHandle(out_r);
-    CloseHandle(err_r);
-    return r;
-}
-
-void cleanup_stale_lock(const fs::path& git_dir, const log_fn& log) {
-    fs::path lock = git_dir / "index.lock";
-    std::error_code ec;
-    if (!fs::exists(lock, ec))
-        return;
-
-    for (int attempt = 0; attempt < 5; ++attempt) {
-        if (attempt > 0)
-            Sleep(200);
-        fs::remove(lock, ec);
-        if (!ec) {
-            if (attempt > 0)
-                log("Removed stale index.lock (retry " + std::to_string(attempt) + ")");
-            else
-                log("Removed stale index.lock");
-            return;
-        }
-    }
-    log("ERROR: cannot remove index.lock after 5 attempts: " + ec.message());
-    log("  " + path_utf8(lock));
-    log("  Close any other programs using this repo, or delete the file manually.");
-}
 
 const std::vector<std::string>& default_preset() {
     for (auto& [name, pats] : g_presets)
@@ -230,38 +20,6 @@ const std::vector<std::string>& default_preset() {
             return pats;
     static const std::vector<std::string> empty;
     return empty;
-}
-
-presets_t g_presets = {
-    { "General", { ".svn", "x64", "*~", "*.TMP" } },
-    { "C++", { ".vs", "x64", "Debug", "Release", "*.suo", "*.user", "*.sdf", "*.opensdf", "*.dll", "*.lib", "*.exe", "*.pdb", "*.ilk", "*.exp", "*.obj" } },
-    { "Python", { "__pycache__", "*.pyc", ".mypy_cache", ".pytest_cache", "*.egg-info", ".venv", "venv", ".ipynb_checkpoints" } },
-};
-
-std::string run_git(const std::vector<std::string>& args, DWORD timeout_ms) {
-    auto r = git_exec(args, timeout_ms);
-    if (r.code != 0)
-        throw std::runtime_error("git failed:\n" + r.err);
-    return r.out;
-}
-
-std::tuple<int, int, int> git_version() {
-    git_result r;
-    try {
-        r = git_exec({ "--version" }, 10000);
-    } catch (...) {
-        return { 0, 0, 0 };
-    }
-    std::istringstream ss(r.out);
-    std::string word;
-    while (ss >> word) {
-        if (!word.empty() && std::isdigit((unsigned char)word[0])) {
-            int maj = 0, min = 0, pat = 0;
-            if (sscanf_s(word.c_str(), "%d.%d.%d", &maj, &min, &pat) >= 2)
-                return { maj, min, pat };
-        }
-    }
-    return { 0, 0, 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -458,8 +216,6 @@ void watch_engine::apply_perf_config() {
 // Nested git repos
 // ---------------------------------------------------------------------------
 
-// Scan one level deep for directories that contain a .git entry (could be a
-// directory or a file, e.g. worktrees).  Must be called before `git add -A`.
 void watch_engine::discover_nested_repos() {
     std::error_code ec;
     int count = 0;
@@ -477,21 +233,17 @@ void watch_engine::discover_nested_repos() {
         std::replace(relw.begin(), relw.end(), L'\\', L'/');
         if (relw == L"." || relw.empty())
             continue;
-        std::string key = wtoa(relw);
+        std::string key = to_utf8(relw);
         if (std::find(nested_roots_.begin(), nested_roots_.end(), key) == nested_roots_.end())
             nested_roots_.push_back(key);
     }
 }
 
-// Stage files from every known nested repo so they are backed up as plain
-// files (not gitlinks).
 void watch_engine::stage_all_nested_repos() {
     for (auto& r : nested_roots_)
         stage_nested_repo(r);
 }
 
-// Catch any new gitlinks that `git add` created despite our exclude rules.
-// This is a safety net — discover_nested_repos should prevent them.
 void watch_engine::absorb_new_gitlinks() {
     std::string out = git({ "diff", "--cached", "--raw" }, false);
     std::vector<std::string> roots;
@@ -527,7 +279,7 @@ bool watch_engine::is_under_nested(const std::string& posix) const {
 }
 
 bool watch_engine::is_binary_file(const std::string& rel_path) const {
-    fs::path abs = fs::path(watch_path_) / fs::path(atow(rel_path));
+    fs::path abs = fs::path(watch_path_) / fs::path(to_wide(rel_path));
     std::error_code ec;
     if (!fs::is_regular_file(abs, ec))
         return false;
@@ -556,8 +308,6 @@ void watch_engine::unstage_binaries() {
     }
 }
 
-// Stage files directly into the index (git hashes them). Bypasses `git add`'s
-// submodule detection, so files inside a nested repo go in as plain files.
 void watch_engine::stage_files(const std::vector<std::string>& add_posix) {
     if (add_posix.empty())
         return;
@@ -571,7 +321,7 @@ void watch_engine::stage_files(const std::vector<std::string>& add_posix) {
         std::vector<std::string> args = { gd, wt, "update-index", "--add", "--" };
         for (size_t j = i; j < end; ++j)
             args.push_back(add_posix[j]);
-        auto r = git_exec(args, 60000, watch_path_.c_str(), stop_event_);
+        git_exec(args, 60000, watch_path_.c_str(), stop_event_);
     }
 }
 
@@ -592,9 +342,8 @@ void watch_engine::remove_paths(const std::vector<std::string>& del_posix) {
     }
 }
 
-// Walk a nested repo and stage every file (skipping .git at any depth).
 void watch_engine::stage_nested_repo(const std::string& root_posix) {
-    fs::path abs_root = fs::path(watch_path_) / fs::path(atow(root_posix));
+    fs::path abs_root = fs::path(watch_path_) / fs::path(to_wide(root_posix));
     std::vector<std::string> adds;
     auto pts = ignore_.patterns();
     std::error_code ec;
@@ -614,7 +363,7 @@ void watch_engine::stage_nested_repo(const std::string& root_posix) {
         if (!it->is_regular_file(ec))
             continue;
         std::wstring relw = fs::relative(it->path(), watch_path_, ec).wstring();
-        std::string rel = wtoa(relw);
+        std::string rel = to_utf8(relw);
         if (ignore_.is_ignored(rel))
             continue;
         std::replace(rel.begin(), rel.end(), '\\', '/');
@@ -724,15 +473,14 @@ void watch_engine::commit() {
     std::string chk = git({ "diff", "--cached", "--name-only" }, false);
 
     if (overflow) {
-        // Lost the change list — re-stage every nested repo to be safe.
         for (auto& r : nested_roots_)
             stage_nested_repo(r);
     } else {
         std::vector<std::string> adds, dels;
         for (auto& p : pending) {
             if (!is_under_nested(p))
-                continue; // handled by `git add -A`
-            fs::path abs = fs::path(watch_path_) / fs::path(atow(p));
+                continue;
+            fs::path abs = fs::path(watch_path_) / fs::path(to_wide(p));
             std::error_code ec;
             if (fs::is_regular_file(abs, ec)) {
                 if (skip_binary_ && is_binary_file(p))
@@ -812,7 +560,6 @@ void watch_engine::thread_proc() {
             DWORD br = 0;
             if (GetOverlappedResult(dir, &ov, &br, FALSE)) {
                 if (br == 0) {
-                    // Buffer overflow — too many changes to enumerate. Re-scan everything.
                     overflow_ = true;
                     last_change = GetTickCount64();
                 } else {
@@ -820,7 +567,7 @@ void watch_engine::thread_proc() {
                     for (;;) {
                         auto fni = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
                         std::wstring name(fni->FileName, fni->FileNameLength / sizeof(WCHAR));
-                        std::string rel = wtoa(name);
+                        std::string rel = to_utf8(name);
                         if (!ignore_.is_ignored(rel)) {
                             std::replace(rel.begin(), rel.end(), '\\', '/');
                             pending_.insert(rel);
@@ -852,101 +599,4 @@ void watch_engine::thread_proc() {
     if (ov.hEvent)
         CloseHandle(ov.hEvent);
     CloseHandle(dir);
-}
-
-// ---------------------------------------------------------------------------
-// History queries — read-only, used by the restore UI
-// ---------------------------------------------------------------------------
-
-std::vector<commit_entry> get_commit_log(const fs::path& git_dir, const fs::path& work_tree) {
-    auto r = git_exec(
-        { "--git-dir=" + path_utf8(git_dir), "--work-tree=" + path_utf8(work_tree), "log", "--format=%H%x09%ai%x09%s" },
-        30000);
-    std::vector<commit_entry> commits;
-    for (auto& line : split_lines(r.out)) {
-        if (trim(line).empty())
-            continue;
-        size_t t1 = line.find('\t');
-        if (t1 == std::string::npos)
-            continue;
-        size_t t2 = line.find('\t', t1 + 1);
-        if (t2 == std::string::npos)
-            continue;
-        commit_entry e;
-        e.hash = line.substr(0, t1);
-        e.timestamp = line.substr(t1 + 1, t2 - t1 - 1);
-        e.message = line.substr(t2 + 1);
-        commits.push_back(std::move(e));
-    }
-    return commits;
-}
-
-std::vector<commit_file> get_commit_files(const fs::path& git_dir, const fs::path& work_tree, const std::string& hash) {
-    auto r = git_exec(
-        { "--git-dir=" + path_utf8(git_dir), "--work-tree=" + path_utf8(work_tree), "diff-tree", "--root",
-          "--no-commit-id", "-r", "--name-status", hash },
-        30000);
-    std::vector<commit_file> files;
-    for (auto& line : split_lines(r.out)) {
-        size_t tab = line.find('\t');
-        if (tab == std::string::npos)
-            continue;
-        commit_file f;
-        f.status = trim(line.substr(0, tab));
-        f.path = trim(line.substr(tab + 1));
-        files.push_back(std::move(f));
-    }
-    return files;
-}
-
-std::string get_file_at_commit(const fs::path& git_dir, const std::string& hash, const std::string& file_path) {
-    auto r = git_exec({ "--git-dir=" + path_utf8(git_dir), "show", hash + ":" + file_path }, 30000);
-    if (r.code != 0)
-        throw std::runtime_error("Could not retrieve " + file_path + " at " + hash);
-    return r.out;
-}
-
-std::vector<std::string> get_full_tree_at_commit(const fs::path& git_dir, const std::string& hash) {
-    auto r = git_exec({ "--git-dir=" + path_utf8(git_dir), "ls-tree", "-r", "--name-only", hash }, 30000);
-    std::vector<std::string> out;
-    for (auto& line : split_lines(r.out)) {
-        std::string t = trim(line);
-        if (!t.empty())
-            out.push_back(t);
-    }
-    return out;
-}
-
-std::string get_diff_for_commit(
-    const fs::path& git_dir, const fs::path& work_tree, const std::string& hash, const std::string& file_path) {
-    std::vector<std::string> args = {
-        "--git-dir=" + path_utf8(git_dir), "--work-tree=" + path_utf8(work_tree), "diff", hash + "~1", hash, "--"
-    };
-    if (!file_path.empty())
-        args.push_back(file_path);
-    auto r = git_exec(args, 30000);
-    return r.out;
-}
-
-std::vector<std::string> export_files(
-    const fs::path& git_dir,
-    const std::string& hash,
-    const std::vector<std::string>& file_paths,
-    const fs::path& dest_dir) {
-    std::vector<std::string> exported;
-    for (auto& fp : file_paths) {
-        std::string content;
-        try {
-            content = get_file_at_commit(git_dir, hash, fp);
-        } catch (const std::exception&) {
-            continue;
-        }
-        fs::path out = dest_dir / fs::path(atow(fp));
-        std::error_code ec;
-        fs::create_directories(out.parent_path(), ec);
-        std::ofstream f(out, std::ios::binary);
-        f.write(content.data(), (std::streamsize)content.size());
-        exported.push_back(fp);
-    }
-    return exported;
 }

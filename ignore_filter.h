@@ -20,6 +20,4 @@ private:
     fs::path _file;
     std::vector<std::string> _component_patterns;
     std::vector<std::string> _path_patterns;
-
-    static bool _fnmatch(const std::string& pattern, const std::string& str);
 };

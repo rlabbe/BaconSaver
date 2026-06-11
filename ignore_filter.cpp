@@ -1,11 +1,7 @@
 #include "ignore_filter.h"
-#include <Shlwapi.h>
+#include "util.h"
 #include <algorithm>
 #include <fstream>
-
-#pragma comment(lib, "shlwapi.lib")
-
-inline const std::vector<std::string> always_ignored = { ".git" };
 
 IgnoreFilter::IgnoreFilter(const fs::path& pattern_file) : _file(pattern_file) {
     reload();
@@ -62,37 +58,15 @@ bool IgnoreFilter::is_ignored(const std::string& rel_path) const {
     auto parts = norm;
     for (auto& pat : _component_patterns)
         for (auto part_it = parts.begin(); part_it != parts.end(); ++part_it)
-            if (_fnmatch(pat, part_it->string()))
+            if (fnmatch(pat, part_it->string()))
                 return true;
 
     std::string n = rel_path;
     std::replace(n.begin(), n.end(), '\\', '/');
     for (auto& pat : _path_patterns)
-        if (_fnmatch(pat, n))
+        if (fnmatch(pat, n))
             return true;
 
     return false;
 }
 
-bool IgnoreFilter::_fnmatch(const std::string& pattern, const std::string& str) {
-    if (pattern.find('[') != std::string::npos)
-        return PathMatchSpecA(str.c_str(), pattern.c_str());
-    size_t pi = 0, si = 0, pstar = std::string::npos, sstar = 0;
-    while (si < str.size()) {
-        if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == str[si])) {
-            ++pi;
-            ++si;
-        } else if (pi < pattern.size() && pattern[pi] == '*') {
-            pstar = pi++;
-            sstar = si;
-        } else if (pstar != std::string::npos) {
-            pi = pstar + 1;
-            si = ++sstar;
-        } else {
-            return false;
-        }
-    }
-    while (pi < pattern.size() && pattern[pi] == '*')
-        ++pi;
-    return pi == pattern.size();
-}
